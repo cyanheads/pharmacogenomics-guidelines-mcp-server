@@ -238,11 +238,14 @@ When you complete a skill's checklist, check the boxes and add a completion time
 | `bun run format` | Auto-fix formatting (safe fixes only) |
 | `bun run format:unsafe` | Also apply Biome's unsafe autofixes — review the diff; they can change behavior |
 | `bun run test` | Run tests (Vitest — use `bun run test`, not `bun test`) |
+| `bun run test:coverage` | Run tests with Istanbul coverage |
 | `bun run start:stdio` | Production mode (stdio) |
 | `bun run start:http` | Production mode (HTTP) |
 | `bun run changelog:build` | Regenerate `CHANGELOG.md` from `changelog/<major.minor>.x/*.md` |
 | `bun run changelog:check` | Verify `CHANGELOG.md` is in sync (used by devcheck) |
 | `bun run bundle` | Build, pack, and clean a `.mcpb` for one-click Claude Desktop install |
+| `bun run release:github` | Create the GitHub Release from the version's annotated tag and attach the `.mcpb` bundle (release workflow only) |
+| `bun run publish-mcp` | Authenticate with the macOS Keychain token and publish `server.json` to the MCP Registry (release workflow only) |
 
 **CI is one file.** `.github/workflows/codeql.yml` (scaffolded) is the only GitHub Actions workflow: CodeQL is GitHub-owned end to end, and the file runs only while the repo's CodeQL *default setup* is turned off. Verification — `devcheck`, tests, the release gates — runs locally; don't add a workflow that re-runs it.
 

@@ -2,7 +2,10 @@
 
 Thanks for using `pharmacogenomics-guidelines-mcp-server`. Bugs, feature requests, and documentation gaps all belong in an issue — that's where they get read and picked up.
 
-Open one from the **Issues** tab and pick the **Bug Report** or **Feature Request** form. Both are structured, and filling in the fields is what makes an issue actionable. Anything that fits neither can be a plain issue — a half-formed idea in your own words is fine.
+- [Report a bug](https://github.com/cyanheads/pharmacogenomics-guidelines-mcp-server/issues/new?template=bug_report.yml)
+- [Request a feature](https://github.com/cyanheads/pharmacogenomics-guidelines-mcp-server/issues/new?template=feature_request.yml)
+
+Both forms are structured, and filling in the fields is what makes an issue actionable. Anything that fits neither can be a plain issue — a half-formed idea in your own words is fine.
 
 ## Server bug or framework bug?
 
@@ -41,4 +44,4 @@ Read the relevant one before filing on a user's behalf.
 
 ## Security
 
-Don't open a public issue for a vulnerability. Report it privately — GitHub's **Security** tab → **Report a vulnerability**, or email the maintainer.
+Don't open a public issue for a vulnerability. See [SECURITY.md](./SECURITY.md) for private disclosure.
