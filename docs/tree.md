@@ -1,6 +1,6 @@
 # pharmacogenomics-guidelines-mcp-server - Directory Structure
 
-Generated on: 2026-10-20 07:23:55
+Generated on: 2026-10-20 07:47:41
 
 ```text
 pharmacogenomics-guidelines-mcp-server/
@@ -25,6 +25,7 @@ pharmacogenomics-guidelines-mcp-server/
 │   └── settings.json
 ├── changelog/
 │   ├── 0.1.x/
+│   ├── 0.2.x/
 │   └── template.md
 ├── docs/
 │   └── design.md
