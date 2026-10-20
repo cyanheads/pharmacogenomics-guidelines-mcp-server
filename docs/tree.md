@@ -1,6 +1,6 @@
 # pharmacogenomics-guidelines-mcp-server - Directory Structure
 
-Generated on: 2026-10-20 02:33:53
+Generated on: 2026-10-20 02:54:42
 
 ```text
 pharmacogenomics-guidelines-mcp-server/
@@ -139,20 +139,50 @@ pharmacogenomics-guidelines-mcp-server/
 │   │   ├── resources/
 │   │   │   └── definitions/
 │   │   └── tools/
-│   │       └── definitions/
-│   │           └── echo.tool.ts
+│   │       ├── definitions/
+│   │       │   ├── get-recommendations.tool.ts
+│   │       │   ├── index.ts
+│   │       │   ├── lookup-diplotype.tool.ts
+│   │       │   ├── pgx-get-guideline.tool.ts
+│   │       │   ├── pgx-list-reference.tool.ts
+│   │       │   ├── pgx-search-pairs.tool.ts
+│   │       │   └── search-alleles.tool.ts
+│   │       └── shared/
+│   │           ├── lossless-renderer.ts
+│   │           └── schemas.ts
+│   ├── services/
+│   │   └── cpic/
+│   │       ├── cpic-service.ts
+│   │       ├── discovery.ts
+│   │       ├── evidence.ts
+│   │       ├── index.ts
+│   │       ├── provenance.ts
+│   │       ├── query.ts
+│   │       ├── recommendations.ts
+│   │       └── records.ts
 │   └── index.ts
 ├── tests/
 │   ├── fuzz/
-│   │   └── echo-tool.fuzz.test.ts
 │   ├── integration/
-│   │   └── echo-contract.int.test.ts
 │   ├── prompts/
 │   ├── resources/
 │   ├── smoke/
-│   │   └── definitions.smoke.test.ts
-│   └── tools/
-│       └── echo.tool.test.ts
+│   ├── tools/
+│   └── unit/
+│       ├── cpic/
+│       │   ├── query.test.ts
+│       │   └── service.test.ts
+│       ├── discovery/
+│       │   └── discovery-contract.test.ts
+│       ├── evidence/
+│       │   └── evidence-contract.test.ts
+│       ├── recommendations/
+│       │   ├── boundaries.test.ts
+│       │   ├── fixtures.ts
+│       │   └── recommendations-contract.test.ts
+│       └── tool-shared/
+│           ├── lossless-renderer.test.ts
+│           └── schemas.test.ts
 ├── .dockerignore
 ├── .env.example
 ├── .gitattributes
