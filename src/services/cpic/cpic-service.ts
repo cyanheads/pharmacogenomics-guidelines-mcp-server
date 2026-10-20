@@ -88,11 +88,10 @@ export interface CpicProvenance {
 }
 
 /** Explicit scan/attempt bounds fail rather than returning incomplete results. */
-export function queryTooBroad(requestUrl: string, cap: number): McpError {
+export function queryTooBroad(cap: number): McpError {
   return validationError('CPIC lookup exceeded its bounded work budget.', {
     reason: 'query_too_broad',
     retryable: false,
-    requestUrl,
     cap,
   });
 }
@@ -265,7 +264,7 @@ export class CpicWorkflow {
                 reason: 'retry_deadline_exceeded',
                 deadlineMs: 45_000,
               });
-            if (this.attempts >= 100) throw queryTooBroad(requestUrl, 100);
+            if (this.attempts >= 100) throw queryTooBroad(100);
             this.attempts++;
             try {
               const response = await request(requestUrl, attemptBudget, signal);
@@ -348,7 +347,7 @@ export class CpicWorkflow {
       });
       items.push(...result.items);
       if (result.page.nextOffset === null) return items;
-      if (items.length >= cap) throw queryTooBroad(result.requestUrl, cap);
+      if (items.length >= cap) throw queryTooBroad(cap);
       offset = result.page.nextOffset;
     }
   }

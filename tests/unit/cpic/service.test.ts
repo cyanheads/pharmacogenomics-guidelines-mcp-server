@@ -4,12 +4,15 @@
  */
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, type MockContextLogger } from '@cyanheads/mcp-ts-core/testing';
+import { ErrorHandler, logger } from '@cyanheads/mcp-ts-core/utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CpicService } from '@/services/cpic/cpic-service.js';
 import { recordSchemas } from '@/services/cpic/records.js';
+import { sanitizeLogBindings } from '../../../node_modules/@cyanheads/mcp-ts-core/dist/utils/internal/logger.js';
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 const service = new CpicService();
@@ -103,6 +106,46 @@ describe('CPIC workflow paging', () => {
 });
 
 describe('CPIC failures and work bounds', () => {
+  it.each(['scan', 'attempts'])(
+    'omits genetic query URLs from %s budget failures',
+    async (mode) => {
+      const ctx = createMockContext();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () =>
+          Response.json(mode === 'scan' ? [{ recommendationid: 1 }, { recommendationid: 2 }] : []),
+        ),
+      );
+      const error = await service
+        .workflow(ctx, async (workflow) => {
+          const query = { diplotypeLookup: { CYP2D6: { '*1': 1, '*4': 1 } } };
+          if (mode === 'scan') await workflow.scan('rpc/recommendation_lookup', query, 1);
+          else
+            for (let i = 0; i < 101; i++) await workflow.page('rpc/recommendation_lookup', query);
+        })
+        .catch((error: unknown) => error);
+      expect(error).toMatchObject({
+        code: JsonRpcErrorCode.ValidationError,
+        data: { reason: 'query_too_broad', cap: mode === 'scan' ? 1 : 100 },
+      });
+      expect(JSON.stringify(error)).not.toMatch(/requestUrl|CYP2D6|cpicpgx|diplotypelookup/);
+      const logs: unknown[] = [];
+      vi.spyOn(logger, 'error').mockImplementation((message, context) => {
+        logs.push(
+          sanitizeLogBindings({ message, ...(context && 'extra' in context ? context.extra : {}) }),
+        );
+      });
+      ErrorHandler.handleError(error, {
+        operation: 'pgx_get_recommendations',
+        includeStack: false,
+      });
+      expect(logs).toHaveLength(1);
+      expect(JSON.stringify(logs)).not.toMatch(/requestUrl|CYP2D6|cpicpgx|diplotypelookup/);
+      expect(JSON.stringify((ctx.log as MockContextLogger).calls)).not.toMatch(
+        /CYP2D6|cpicpgx|diplotypelookup/,
+      );
+    },
+  );
   it('times out body consumption and stops the retry ladder at its attempt bound', async () => {
     vi.useFakeTimers();
     const fetch = vi.fn(async (_url: string, init: RequestInit) => {

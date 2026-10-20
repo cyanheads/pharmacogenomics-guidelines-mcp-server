@@ -154,6 +154,21 @@ describe('explicit recommendation matches', () => {
       error: { data: { availableGenes: ['CYP2C19', 'TPMT'] } },
     });
   });
+  it('names every available gene in the text error while retaining the structured list', async () => {
+    upstream({ recommendations: [recommendation(1, { TPMT: 'Normal', NUDT15: 'Normal' })] });
+    const result = await failure(
+      { mode: 'drug', drugId: 'D1', phenotype: 'Normal' },
+      'gene_required',
+    );
+    expect(result.structuredContent).toMatchObject({
+      error: { data: { availableGenes: ['TPMT', 'NUDT15'] } },
+    });
+    const text = result.content
+      .flatMap((block) => (block.type === 'text' ? [block.text] : []))
+      .join('\n');
+    expect(text).toContain('TPMT');
+    expect(text).toContain('NUDT15');
+  });
   it('matches named HLA status across prefix differences but never another allele', async () => {
     const rows = ['*57:01 positive', '*15:02 positive'].map((status, i) => ({
       ...recommendation(i + 1, { 'HLA-B': status }),

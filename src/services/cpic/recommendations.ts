@@ -298,11 +298,10 @@ export async function getRecommendations(workflow: CpicWorkflow, input: Recommen
   if (input.phenotype !== undefined || input.activityScore !== undefined) {
     const gene = input.geneSymbol ?? (availableGenes.length === 1 ? availableGenes[0] : undefined);
     if (!gene)
-      throw validationError('An explicit gene is required for this result.', {
-        reason: 'gene_required',
-        availableGenes,
-        retryable: false,
-      });
+      throw validationError(
+        `An explicit gene is required for this result. Available genes: ${JSON.stringify(availableGenes)}.`,
+        { reason: 'gene_required', availableGenes, retryable: false },
+      );
     supplied = {
       [gene]:
         input.phenotype !== undefined
@@ -311,12 +310,13 @@ export async function getRecommendations(workflow: CpicWorkflow, input: Recommen
     };
   }
   const resolved = input.mode === 'drug' ? await resolveResults(workflow, supplied) : {};
+  const resolvedEntries = Object.entries(resolved);
   const matched: Recommendation[] = [];
   for (const row of rows) {
     const keys = Object.entries(row.lookupkey ?? {});
     if (
       input.mode === 'drug' &&
-      !Object.entries(resolved).every(([gene, result]) => matchesResult(row, gene, result))
+      !resolvedEntries.every(([gene, result]) => matchesResult(row, gene, result))
     )
       continue;
     if (

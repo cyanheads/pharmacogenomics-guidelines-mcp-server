@@ -93,7 +93,7 @@ export const pgxSearchPairs = tool('pgx_search_pairs', {
       code: JsonRpcErrorCode.ValidationError,
       when: 'A bounded source scan or workflow work budget is exceeded.',
       recovery:
-        'Narrow a supported gene, drug, or allele selector in this tool; call pgx_list_reference with topic input_formats for selectors. If the failing lookup already identifies one gene and allele, inspect the source request URL in the error and report the bounded lookup failure.',
+        'Narrow a supported gene, drug, or allele selector in this tool; call pgx_list_reference with topic input_formats for selectors. If the lookup is already specific, report the bounded lookup failure with its request ID.',
       thrownBy: 'service',
     },
     {

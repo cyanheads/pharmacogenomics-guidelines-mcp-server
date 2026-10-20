@@ -32,14 +32,14 @@ export const drugIdSchema = optionalTextSchema(
 /** RxNorm identifier with an optional source prefix and outer whitespace. */
 export const rxnormIdSchema = z
   .string()
-  .regex(/^\s*(?:(?:RxNorm:)?\d+)?\s*$/i)
+  .regex(/^(?:\s*|\s*(?:RxNorm:)?\d+\s*)$/i)
   .optional()
   .describe('Decimal RxNorm ID, optionally prefixed RxNorm:; blank means unset.');
 
 /** Exact ATC membership identifier, not a hierarchy query. */
 export const atcIdSchema = z
   .string()
-  .regex(/^\s*(?:(?:ATC:)?[a-z\d]{1,7})?\s*$/i)
+  .regex(/^(?:\s*|\s*(?:ATC:)?[a-z\d]{1,7}\s*)$/i)
   .optional()
   .describe('Exact ATC code (1–7 letters/digits), optionally prefixed ATC:; blank means unset.');
 

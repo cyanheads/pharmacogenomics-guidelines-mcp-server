@@ -477,13 +477,14 @@ describe('bounded discovery scans', () => {
           data: {
             reason: 'query_too_broad',
             cap,
-            requestUrl: expect.stringContaining(`/v1/${endpoint}`),
           },
         },
       });
       expect(JSON.stringify(result.content)).toContain(
         tool.errors?.find((e) => e.reason === 'query_too_broad')?.recovery,
       );
+      expect(JSON.stringify(result)).not.toContain('requestUrl');
+      expect(JSON.stringify(result)).not.toContain('source request URL');
     },
   );
 });

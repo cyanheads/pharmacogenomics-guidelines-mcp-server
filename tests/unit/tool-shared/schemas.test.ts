@@ -13,6 +13,15 @@ import {
 import { buildCpicUrl } from '@/services/cpic/query.js';
 
 describe('shared input boundaries', () => {
+  it.each([rxnormIdSchema, atcIdSchema])(
+    'rejects long malformed identifiers promptly',
+    (schema) => {
+      const started = performance.now();
+      expect(schema.safeParse(' '.repeat(60_000) + '!').success).toBe(false);
+      expect(performance.now() - started).toBeLessThan(250);
+      expect(schema.parse(' '.repeat(60_000))).toBe(' '.repeat(60_000));
+    },
+  );
   it('accepts optional form blanks and trims only caller text', () => {
     expect(optionalText(' \r\n ')).toBeUndefined();
     expect(optionalText(' HLA-B ')).toBe('HLA-B');
