@@ -42,159 +42,53 @@ Tailor suggestions to what's actually missing or stale — don't recite the full
 
 ---
 
+## Source contracts
+
+Exactly six tools are registered in `src/index.ts`; there are no resources, prompts, domain environment variables or persistent patient records. See [README.md](./README.md) for the tool surface and [docs/design.md](./docs/design.md) for source semantics.
+
+- A pair evaluation, a ClinPGx testing label and a prescribing recommendation are separate evidence.
+- Drug-only browsing stays exploratory. Genetic matches require every source lookup prerequisite; omitted genes are never normal, negative or Indeterminate by default.
+- Preserve populations, activity scores, HLA allele identities, non-star notation, source nullability and all recommendation classifications.
+- `content[]` and `structuredContent` carry the same complete data. Use `formatLossless` plus reversible enrichment renderers; never truncate clinical text or escape a link into inert text.
+- Keep exact request URLs and row versions in caller-facing provenance, not logs. Never log genotype maps or source consultation text.
+- The source is fixed at `https://api.cpicpgx.org/v1/`. No caller-supplied host or raw query expression.
+
 ## Patterns
 
-### Tool
+### Tool and service boundary
+
+Read `src/mcp-server/tools/definitions/search-alleles.tool.ts` for the complete definition. Its handler normalizes caller selectors, runs one bounded service workflow, enriches the result and returns complete records:
 
 ```ts
-import { tool, z } from '@cyanheads/mcp-ts-core';
-
-export const searchItems = tool('search_items', {
-  description: 'Search inventory items by query.',
-  annotations: { readOnlyHint: true },
-  input: z.object({
-    query: z.string().describe('Search terms'),
-    limit: z.number().int().min(1).max(100).default(10).describe('Max results (1–100)'),
-  }),
-  output: z.object({
-    items: z.array(z.object({
-      id: z.string().describe('Item ID'),
-      name: z.string().describe('Item name'),
-    })).describe('Matching items'),
-  }),
-  auth: ['inventory:read'],
-
-  async handler(input, ctx) {
-    const items = await findItems(input.query, input.limit);
-    ctx.log.info('Search completed', { query: input.query, count: items.length });
-    return { items };
-  },
-
-  // format() populates content[] — the markdown twin of structuredContent.
-  // Different clients read different surfaces (Claude Code → structuredContent,
-  // Claude Desktop → content[]); both must carry the same data.
-  // Enforced at lint time: every field in `output` must appear in the rendered text.
-  format: (result) => [{
-    type: 'text',
-    text: result.items.map(i => `**${i.id}**: ${i.name}`).join('\n'),
-  }],
+const result = await getCpicService().workflow(ctx, (workflow) =>
+  searchAlleles(workflow, effectiveQuery),
+);
+ctx.enrich({
+  effectiveQuery,
+  notices,
+  truncated: result.page.nextOffset !== null,
+  shown: result.items.length,
+  cap: input.limit,
 });
+return result;
 ```
 
-### Resource
+All tools use `CpicService.workflow` so related requests share one 45-second deadline and 100-attempt ceiling. Source parsing, pagination, retry classification and completeness checks live in `src/services/cpic/`, not handlers. Scan overflow is `query_too_broad`, never a partial success.
 
-```ts
-import { resource, z } from '@cyanheads/mcp-ts-core';
-import { notFound } from '@cyanheads/mcp-ts-core/errors';
+### Identity and lifecycle
 
-export const itemData = resource('inventory://{itemId}', {
-  description: 'Fetch an inventory item by ID.',
-  params: z.object({ itemId: z.string().describe('Item identifier') }),
-  auth: ['inventory:read'],
-  async handler(params, ctx) {
-    const item = await ctx.state.get(`item/${params.itemId}`);
-    if (!item) throw notFound(`Item ${params.itemId} not found`, { itemId: params.itemId });
-    return item;
-  },
-});
-```
+`src/index.ts` sets both `name` and `title` to `pharmacogenomics-guidelines-mcp-server`. Package/install identity is `@cyanheads/pharmacogenomics-guidelines-mcp-server`; registry identity is `io.github.cyanheads/pharmacogenomics-guidelines-mcp-server`. The description comes from `package.json`.
 
-### Prompt
-
-```ts
-import { prompt, z } from '@cyanheads/mcp-ts-core';
-
-export const reviewCode = prompt('review_code', {
-  description: 'Review code for issues and best practices.',
-  args: z.object({
-    code: z.string().describe('Code to review'),
-    language: z.string().optional().describe('Programming language'),
-  }),
-  generate: (args) => [
-    { role: 'user', content: { type: 'text', text: `Review this ${args.language ?? ''} code:\n${args.code}` } },
-  ],
-});
-```
-
-### Server config
-
-```ts
-// src/config/server-config.ts — lazy-parsed, separate from framework config
-import { z } from '@cyanheads/mcp-ts-core';
-import { parseEnvConfig } from '@cyanheads/mcp-ts-core/config';
-
-const ServerConfigSchema = z.object({
-  apiKey: z.string().describe('External API key'),
-  maxResults: z.coerce.number().default(100),
-  verboseLogging: z.stringbool().default(false).describe('Enable verbose logging'),
-});
-
-let _config: z.infer<typeof ServerConfigSchema> | undefined;
-export function getServerConfig() {
-  _config ??= parseEnvConfig(ServerConfigSchema, {
-    apiKey: 'MY_API_KEY',
-    maxResults: 'MY_MAX_RESULTS',
-    verboseLogging: 'MY_VERBOSE_LOGGING',
-  });
-  return _config;
-}
-```
-
-`parseEnvConfig` maps Zod schema paths → env var names so errors name the variable (`MY_API_KEY`) not the path (`apiKey`). Throws `ConfigurationError`, which the framework prints as a clean startup banner.
-
-For env booleans use `z.stringbool()`, never `z.coerce.boolean()` — `Boolean("false")` is `true`, so a coerced flag can't be disabled through the environment. `z.stringbool()` parses `true/false/1/0/yes/no/on/off` and rejects anything else, so `=false` actually disables.
-
-### Server identity and instructions
-
-`createApp()` accepts optional identity fields forwarded to the SDK's `initialize` response and the server manifest (`/.well-known/mcp.json`):
-
-```ts
-await createApp({
-  name: 'my-mcp-server',
-  title: 'My Server',                         // human-readable display name
-  websiteUrl: 'https://github.com/owner/repo', // canonical homepage URL
-  description: 'One-line description.',        // wins over MCP_SERVER_DESCRIPTION
-  icons: [{ src: 'https://example.com/icon.png', sizes: ['48x48'], mimeType: 'image/png' }],
-  instructions: 'Use shortcut alpha for the most common case.', // session-level context
-});
-```
-
-`instructions` is optional server-level orientation, sent on every `initialize` as session-level context. Use it for deployment guidance (connection aliases, regional notes, scope hints) instead of repeating the same context across tool descriptions. Client adoption is uneven, but there's no downside when set.
-
-### Session posture and shutdown
-
-Two more `createApp()` options shape how the server runs rather than how it presents itself:
-
-```ts
-await createApp({
-  sessionMode: 'stateless',          // or { default: 'stateful', require: 'stateful' }
-  setup(core) { startMyWatcher(core.config); },
-  async teardown() { await stopMyWatcher(); },
-});
-```
-
-`sessionMode` declares the HTTP session posture in `src/` instead of leaving it to a deployment's `MCP_SESSION_MODE`, which still wins whenever it carries a meaningful value (an empty string and an unsubstituted `${…}` placeholder read as unset and fall through to the option). Add `require: 'stateful'` when a tool asks the caller for input mid-handler via `ctx.requestInput`: startup then fails with a `ConfigurationError` rather than serving a mode in which a 2025-era client can never answer the prompt. Stdio is never refused.
-
-`teardown(core)` is the `setup()` counterpart — release a watcher, socket, or non-`unref()`'d timer there. It runs after the transport stops and before the logger closes, on every shutdown path, and a signal-triggered shutdown then exits the process explicitly (0, or 1 if a step never settles within the framework's 10 s ceiling).
-
----
+`createApp()` registers `allToolDefinitions`, initializes the service in `setup()`, disposes its request pacer in `teardown()`, and declares `sessionMode: 'stateless'`. A meaningful `MCP_SESSION_MODE` environment value overrides that default.
 
 ## Context
 
-Handlers receive a unified `ctx` object. Key properties:
-
-| Property | Description |
-|:---------|:------------|
-| `ctx.log` | Request-scoped logger — `.debug()`, `.info()`, `.notice()`, `.warning()`, `.error()`. Auto-correlates requestId, traceId, tenantId. Dual-sink: Pino **and** `notifications/message` to the client, so treat it as client-visible. |
-| `ctx.state` | Tenant-scoped KV — `.get(key)`, `.set(key, value, { ttl? })`, `.delete(key)`, `.getMany(keys)`, `.list(prefix, { cursor, limit })`. Accepts any JSON-serializable value; reads return its JSON form (a `Date` comes back as an ISO string). |
-| `ctx.requestInput` | Suspend and ask the caller for more input — `return ctx.requestInput({ inputRequests: { key: inputRequired.elicit({ message, requestedSchema }) } })`. Never returns; the handler is re-entered with the answers. Always present. |
-| `ctx.inputs` | The request's responses — `.accepted(key, schema)`, `.view(key)`, `.state()`, `.dropped` — limited to what the client declared (`elicitation` and its form/url modes, `sampling`, `roots`). Client-supplied: a consent gate trusts only a `ctx.state` record it stored when it asked, bound to the operation, caller, and target (see the `api-context` skill). |
-| `ctx.clientCapabilities` | What the client declared for this request, `undefined` when no view exists. Decides whether to ask for optional context (e.g. roots); never a reason to skip a consent prompt. |
-| `ctx.enrich` | Success-path agent context (empty-result notices, query echo, pagination totals) — `ctx.enrich(...)` or `.notice()` / `.total()` / `.echo()` / `.truncated()`. Reaches `structuredContent` and `content[]`; lands only when the definition declares an `enrichment` block (no-op otherwise). |
-| `ctx.content` | Non-text content blocks — `.image(data, mimeType)`, `.audio(data, mimeType)`, or `ctx.content(block)` for a raw block. Prepended to `content[]` after `format()`; never enters `structuredContent`. |
-| `ctx.signal` | `AbortSignal` for cancellation. |
-| `ctx.requestId` | Request ID — the one every log record of the call carries and its error envelope returns as `data.requestId`. |
-| `ctx.tenantId` | Tenant ID from JWT; `'default'` for stdio or HTTP with auth off. |
+| Property | Use in this server |
+|:---|:---|
+| `ctx.enrich` | Effective selectors, notices and page information declared by each tool. |
+| `ctx.fail` | Typed selector errors with per-tool recovery contracts. |
+| `ctx.signal` | Cancellation propagated through service workflows and HTTP requests. |
+| `ctx.log` | Framework request-scoped logging; treat it as client-visible. Do not log clinical inputs. |
 
 ---
 
@@ -246,20 +140,20 @@ See framework CLAUDE.md and the `api-errors` skill for the full auto-classificat
 
 ```text
 src/
-  index.ts                              # createApp() entry point
-  config/
-    server-config.ts                    # Server-specific env vars (Zod schema)
-  services/
-    [domain]/
-      [domain]-service.ts               # Domain service (init/accessor pattern)
-      types.ts                          # Domain types
-  mcp-server/
-    tools/definitions/
-      [tool-name].tool.ts               # Tool definitions
-    resources/definitions/
-      [resource-name].resource.ts       # Resource definitions
-    prompts/definitions/
-      [prompt-name].prompt.ts           # Prompt definitions
+  index.ts                         # createApp() and service lifecycle
+  services/cpic/
+    cpic-service.ts                # HTTP boundary and shared workflow budgets
+    records.ts                     # Lossless source record schemas
+    query.ts                       # Fixed-host literal query construction
+    discovery.ts                   # Pairs, guidelines and live reference data
+    evidence.ts                    # Diplotypes and allele frequencies
+    recommendations.ts             # Explicit genetic matching
+    provenance.ts                  # Source attribution and clinical caveat
+    index.ts                       # Service public API
+  mcp-server/tools/
+    definitions/                   # Six tool definitions and their registry
+    shared/                        # Paging schemas and lossless formatter
+tests/unit/                        # Service, tool contract and boundary tests
 ```
 
 ---
@@ -268,10 +162,10 @@ src/
 
 | What | Convention | Example |
 |:-----|:-----------|:--------|
-| Files | kebab-case with suffix | `search-docs.tool.ts` |
-| Tool/resource/prompt names | snake_case | `search_docs` |
-| Directories | kebab-case | `src/services/doc-search/` |
-| Descriptions | Single string or template literal, no `+` concatenation | `'Search items by query and filter.'` |
+| Files | kebab-case with suffix | `search-alleles.tool.ts` |
+| Tool names | `pgx_` prefix, snake_case | `pgx_search_alleles` |
+| Directories | kebab-case | `src/services/cpic/` |
+| Descriptions | Single string or template literal, no `+` concatenation | `'Inspect CPIC allele function and evidence.'` |
 
 ---
 
@@ -346,7 +240,7 @@ When you complete a skill's checklist, check the boxes and add a completion time
 | `bun run test` | Run tests (Vitest — use `bun run test`, not `bun test`) |
 | `bun run start:stdio` | Production mode (stdio) |
 | `bun run start:http` | Production mode (HTTP) |
-| `bun run changelog:build` | Regenerate `CHANGELOG.md` from `changelog/*.md` |
+| `bun run changelog:build` | Regenerate `CHANGELOG.md` from `changelog/<major.minor>.x/*.md` |
 | `bun run changelog:check` | Verify `CHANGELOG.md` is in sync (used by devcheck) |
 | `bun run bundle` | Build, pack, and clean a `.mcpb` for one-click Claude Desktop install |
 
@@ -405,7 +299,7 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { McpError, JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 
 // Server's own code — via path alias
-import { getMyService } from '@/services/my-domain/my-service.js';
+import { getCpicService } from '@/services/cpic/index.js';
 ```
 
 ---
@@ -426,4 +320,6 @@ import { getMyService } from '@/services/my-domain/my-service.js';
 - [ ] `.codex-plugin/plugin.json` populated — `name`, `version`, `description`, `repository`, `license` from `package.json`; `interface.displayName` = the unscoped repo name (never the npm scope — `lint:packaging` enforces this); `interface.shortDescription` from `package.json` description
 - [ ] `.codex-plugin/mcp.json` updated — server name key is the unscoped repo name; every user-supplied variable (API key, contact email, instance URL) is listed in `env_vars` so Codex forwards it from the user's environment. Never write `"KEY": ""` into `env` — an empty value replaces the user's exported key and is read as unset
 - [ ] `.claude-plugin/plugin.json` populated — `name`, `version`, `description`, `author`, `repository`, `license`, `keywords` from `package.json`; inline `mcpServers` entry keyed by the unscoped repo name. Every user-supplied variable is declared under `userConfig` (`type`, `title`, `description`; `sensitive: true` for keys and tokens; `required: true` or `default: ""`) and referenced from `env` as `"KEY": "${user_config.<option>}"` — mirror the `user_config` block in `manifest.json`. Never write `"KEY": ""` into `env`
-- [ ] `npm run devcheck` passes
+- [ ] Explicit genetic matching requires every source lookup prerequisite; incomplete rows expose no prescribing text
+- [ ] Guideline/recommendation outputs retain the clinical caveat and source attribution
+- [ ] `bun run devcheck`, `bun run rebuild` and `bun run test` pass

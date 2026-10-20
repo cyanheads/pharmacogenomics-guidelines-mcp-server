@@ -199,6 +199,7 @@ pharmacogenomics-guidelines-mcp-server/
 ├── LICENSE
 ├── manifest.json
 ├── package.json
+├── README.md
 ├── server.json
 ├── tsconfig.build.json
 ├── tsconfig.json

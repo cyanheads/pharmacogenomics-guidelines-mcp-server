@@ -4,9 +4,7 @@
   "version": "0.1.0",
   "description": "Find pharmacogenomics guidelines, translate diplotypes, and retrieve prescribing recommendations via MCP. STDIO or Streamable HTTP.",
   "author": {
-    "name": "cyanheads",
-    "email": "casey@caseyjhand.com",
-    "url": "https://caseyjhand.com"
+    "name": "cyanheads"
   },
   "repository": {
     "type": "git",

@@ -3,19 +3,19 @@
   "version": "0.1.0",
   "description": "Find pharmacogenomics guidelines, translate diplotypes, and retrieve prescribing recommendations via MCP. STDIO or Streamable HTTP.",
   "author": {
-    "name": "Casey Hand",
+    "name": "cyanheads",
     "email": "casey@caseyjhand.com",
-    "url": "https://caseyjhand.com"
+    "url": "https://github.com/cyanheads"
   },
   "homepage": "https://github.com/cyanheads/pharmacogenomics-guidelines-mcp-server#readme",
   "repository": "https://github.com/cyanheads/pharmacogenomics-guidelines-mcp-server",
   "license": "Apache-2.0",
-  "keywords": ["mcp", "mcp-server", "model-context-protocol", "ai-agents", "ai-tools", "typescript", "cyanheads", "pharmacogenomics", "pharmacogenetics", "diplotypes", "prescribing-guidelines"],
+  "keywords": ["mcp", "mcp-server", "model-context-protocol", "ai-agents", "ai-tools", "typescript", "bun", "stdio", "streamable-http", "cyanheads", "pharmacogenomics", "pharmacogenetics", "diplotypes", "prescribing-guidelines"],
   "mcpServers": "./.codex-plugin/mcp.json",
   "interface": {
     "displayName": "pharmacogenomics-guidelines-mcp-server",
     "shortDescription": "Find pharmacogenomics guidelines, translate diplotypes, and retrieve prescribing recommendations via MCP. STDIO or Streamable HTTP.",
-    "longDescription": "Explore pharmacogenomics prescribing guidance from the keyless CPIC database API. Search gene-drug pairs, inspect guideline coverage and star alleles, translate diplotypes into phenotypes, and retrieve prescribing recommendations with their evidence and guideline context.",
+    "longDescription": "Query the public CPIC Database through six read-only tools: discover evaluated gene–drug pairs, retrieve guidelines, translate source-supported diplotypes, browse or match prescribing recommendations, inspect allele evidence, and list reference values. Results preserve source records, guideline links and provenance. Matching requires every source genetic prerequisite; omitted genes are never assumed normal or negative. No API key is required.",
     "developerName": "cyanheads",
     "category": "research",
     "capabilities": ["Read"],
