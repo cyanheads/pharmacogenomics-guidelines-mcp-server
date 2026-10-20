@@ -6,7 +6,7 @@ import { runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { Parser } from 'commonmark';
 import { expect, vi } from 'vitest';
 import { getRecommendationsTool } from '@/mcp-server/tools/definitions/get-recommendations.tool.js';
-import type { Diplotype, GeneResult, Recommendation } from '@/services/cpic/records.js';
+import type { Diplotype, GeneResult, Guideline, Recommendation } from '@/services/cpic/records.js';
 
 /** Complete source row with deliberately unnormalized clinical text. */
 export function recommendation(
@@ -79,6 +79,7 @@ export function diplotype(gene = 'CYP2C19', notation = '*1/*2', result = 'Normal
 export interface Dataset {
   diplotypes?: Diplotype[];
   drugs?: unknown[];
+  guidelines?: (Guideline | null | undefined)[];
   recommendations?: Recommendation[];
   references?: GeneResult[];
   rpc?: unknown[];
@@ -93,6 +94,9 @@ export function upstream(data: Dataset) {
     const endpoint = url.pathname.slice('/v1/'.length);
     let rows: unknown[];
     switch (endpoint) {
+      case 'guideline':
+        rows = data.guidelines ?? [];
+        break;
       case 'drug':
         rows = data.drugs ?? [recommendation().drug];
         break;
@@ -115,7 +119,13 @@ export function upstream(data: Dataset) {
     rows = rows.filter((row) => {
       const record = row as Record<string, unknown>;
       for (const [key, value] of url.searchParams) {
-        if (value.startsWith('eq.') && record[key] !== value.slice(3)) return false;
+        if (value.startsWith('cs.')) {
+          const contained = JSON.parse(value.slice(3)) as Record<string, string>;
+          const actual = record[key] as Record<string, string> | undefined;
+          if (!Object.entries(contained).every(([gene, result]) => actual?.[gene] === result))
+            return false;
+        }
+        if (value.startsWith('eq.') && String(record[key]) !== value.slice(3)) return false;
         if (
           value.startsWith('imatch.') &&
           !new RegExp(value.slice(7), 'i').test(String(record[key]))

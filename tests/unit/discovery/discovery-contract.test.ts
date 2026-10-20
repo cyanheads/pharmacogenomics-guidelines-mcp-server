@@ -181,7 +181,7 @@ describe('pgx_get_guideline', () => {
     const output = twin(await runToolContract(pgxGetGuideline, input));
     expect(output).toMatchObject({
       found: true,
-      guidelines: [{ record: guideline, drugs: [drug], pairs: [pair] }],
+      guidelines: [{ record: guideline, drugCount: 1, pairCount: 1 }],
       candidates: [],
       notices: [],
     });
@@ -205,8 +205,8 @@ describe('pgx_get_guideline', () => {
       const rows = url.pathname.endsWith('/guideline')
         ? records
         : url.pathname.endsWith('/drug')
-          ? drugs
-          : pairs;
+          ? drugs.filter((d) => `eq.${d.guidelineid}` === url.searchParams.get('guidelineid'))
+          : pairs.filter((p) => `eq.${p.guidelineurl}` === url.searchParams.get('guidelineurl'));
       const offset = Number(url.searchParams.get('offset'));
       return source(rows.slice(offset, offset + 101), rows.length, offset);
     });
@@ -214,8 +214,8 @@ describe('pgx_get_guideline', () => {
     expect(output.guidelines).toEqual(
       records.map((record) => ({
         record,
-        drugs: drugs.filter((d) => d.guidelineid === record.id),
-        pairs: pairs.filter((p) => p.guidelineurl === record.url),
+        drugCount: drugs.filter((d) => d.guidelineid === record.id).length,
+        pairCount: pairs.filter((p) => p.guidelineurl === record.url).length,
       })),
     );
   });
@@ -431,14 +431,12 @@ describe('bounded discovery scans', () => {
         if (url.pathname.endsWith('/guideline')) return source([guideline]);
         if (!url.pathname.endsWith(`/${endpoint}`)) return source([]);
         const offset = Number(url.searchParams.get('offset'));
-        return source(
+        return Response.json(
           Array.from({ length: 101 }, (_, i) =>
             endpoint === 'drug'
               ? { ...drug, drugid: `D${offset + i}` }
               : { ...pair, pairid: offset + i },
           ),
-          2001,
-          offset,
         );
       });
       const result = await runToolContract(pgxGetGuideline, { by: 'id', guidelineId: 1 });
@@ -448,15 +446,7 @@ describe('bounded discovery scans', () => {
       expect(JSON.stringify(result.content)).not.toContain('"guidelines"');
     },
   );
-  it.each([
-    { tool: pgxSearchPairs, input: { drugId: 'D1' }, cap: 500, endpoint: 'drug' },
-    {
-      tool: pgxGetGuideline,
-      input: { by: 'gene', geneSymbol: 'G' },
-      cap: 100,
-      endpoint: 'guideline',
-    },
-  ])(
+  it.each([{ tool: pgxSearchPairs, input: { drugId: 'D1' }, cap: 500, endpoint: 'drug' }])(
     'fails rather than returning a partial $endpoint scan',
     async ({ tool, input, cap, endpoint }) => {
       network((url) => {

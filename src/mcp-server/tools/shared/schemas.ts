@@ -73,6 +73,20 @@ export const recommendationPaginationFields = {
     .describe('Maximum recommendations to return (1–50; default 10).'),
 };
 
+/** Allele and guideline callers may request any safe positive limit; handlers clamp to 100. */
+export const budgetPaginationFields = {
+  ...paginationFields,
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(Number.MAX_SAFE_INTEGER)
+    .default(25)
+    .describe(
+      'Positive safe-integer row limit; values above 100 are clamped to 100 with a notice (default 25).',
+    ),
+};
+
 /** Public page metadata preserves unknown counts and past-end offsets. */
 export const pageSchema = z
   .object({

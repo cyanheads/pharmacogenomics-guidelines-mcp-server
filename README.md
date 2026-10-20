@@ -23,62 +23,83 @@
 
 ## Overview
 
-Pharmacogenomics evidence from the public [CPIC Database API](https://api.cpicpgx.org/v1/), with clinical source context from [ClinPGx](https://www.clinpgx.org/). Discover evaluated gene–drug pairs, inspect guideline coverage and allele evidence, translate source-supported diplotypes, and browse or match source prescribing recommendations. All six tools are read-only and require no API key.
+Clinical pharmacogenomics evidence from the public [CPIC Database API](https://api.cpicpgx.org/v1/): evaluated gene–drug pairs, guidelines, allele function and frequency, diplotype-to-phenotype translation, and prescribing recommendations, with ClinPGx testing labels and guideline links. You can discover pairs, translate a patient's diplotype, and browse recommendations or match them against explicitly supplied gene results. All six tools are read-only, need no API key, and run as a stdio process or a local Streamable HTTP server.
 
 ### Tools
 
 | Tool | Description |
 |:---|:---|
-| `pgx_search_pairs` | Discover evaluated gene–drug pairs and their source identifiers |
-| `pgx_get_guideline` | Retrieve guideline coverage and related drugs and pairs |
-| `pgx_lookup_diplotype` | Resolve source-supported diplotypes or allele-specific statuses |
-| `pgx_get_recommendations` | Browse recommendations or match explicitly supplied genetic results |
-| `pgx_search_alleles` | Inspect allele function, definition metadata and population frequencies |
-| `pgx_list_reference` | List genes, source results, controlled vocabulary and input formats |
+| `pgx_search_pairs` | Search evaluated gene–drug pairs by gene, drug, RxNorm/ATC identifier, CPIC level or testing label |
+| `pgx_get_guideline` | Retrieve guideline coverage by ID, gene or drug, with related drugs and pairs |
+| `pgx_lookup_diplotype` | Translate a diplotype or HLA allele status into its gene result, activity score and lookup key |
+| `pgx_get_recommendations` | Browse a drug's prescribing recommendations, or match explicit gene results or genotypes |
+| `pgx_search_alleles` | Inspect allele function, evidence, definition metadata and population frequencies |
+| `pgx_list_reference` | List genes, gene-specific results, controlled vocabulary and input formats |
 
 ## Capability reference
 
 ### `pgx_search_pairs` <sub>tool</sub>
 
-- Optional `geneSymbol`, literal `drugName` substring, exact `drugId`, `rxnormId` or `atcId`, `cpicLevel`, `provisional`, `pgxTesting`, and `usedForRecommendation`; all filters combine with AND. RxNorm and ATC prefixes are optional; ATC matching is exact membership, without hierarchy expansion.
-- Complete pair and drug records with guideline links. Retired pairs are excluded unless `includeRetired: true` or `cpicLevel: "Retired"`; an evaluated pair is not a prescribing recommendation.
-- `limit` 1–100 (default 25), `offset` default 0; continue with `page.nextOffset`.
+- Optional filters, combined with AND: `geneSymbol`, `drugName` (literal substring), `drugId`, `rxnormId`, `atcId` (exact code, no hierarchy expansion), `cpicLevel`, `provisional`, `pgxTesting` and `usedForRecommendation`.
+- `limit` 1–100 (default 25); continue from `page.nextOffset`.
+- Returns complete pair records, each with its drug record and guideline link. `Retired` pairs appear only with `includeRetired: true` or `cpicLevel: "Retired"`.
 
 ---
 
 ### `pgx_get_guideline` <sub>tool</sub>
 
-- `by: "id"` requires `guidelineId`; `by: "gene"` requires `geneSymbol`; `by: "drug"` requires exactly one `drugName` or `drugId`. Drug names are exact and case-insensitive; omit selectors from other modes.
-- Returns every matching guideline with complete related drug/pair lists, source versions, links and clinical caveat. Missing coverage returns `found: false`; ambiguous drug names return `candidates` for a retry with `drugId`.
+- Three lookup modes; selectors from other modes are rejected:
+  - `by: "id"` with `guidelineId`
+  - `by: "gene"` with `geneSymbol`
+  - `by: "drug"` with exactly one of `drugName` (exact, case-insensitive) or `drugId`
+- Default `view: "summary"` pages complete guideline records with exact `drugCount` and `pairCount`. `view: "drugs"` or `"pairs"` requires `by: "id"`, retains the guideline descriptor, and pages the selected top-level collection; the other collection is omitted.
+- `limit` defaults to 25; positive safe integers above 100 clamp to 100 with a notice. Follow `page.nextOffset`. Pages use a 24,000-byte soft budget across both response surfaces and enrichment, cutting only between complete rows. One indivisible oversized row sets `oversizedRow: true` with a notice.
+- No coverage returns `found: false`. An ambiguous drug name returns paged `candidates`; `page`, `shown` and `truncated` then describe those candidates. Retry with a `drugId` from that list.
 
 ---
 
 ### `pgx_lookup_diplotype` <sub>tool</sub>
 
-- Requires `geneSymbol` and source-supported `diplotype`: star alleles such as `*1/*2`, named HLA allele status such as `*15:02 positive`, or non-star sequence notation. Exact lookup precedes bounded reverse-order and status aliases; it does not interpret arbitrary variants.
-- Returns `found`, `matchedDiplotype`, complete source `records` and `guidance`. Multiple records remain ambiguous; activity scores and missing results are never calculated.
+- Takes `geneSymbol` plus a source-supported `diplotype`, in either allele order:
+  - star alleles (`*1/*2`, `*1x2/*4`)
+  - HLA allele status (`*57:01 positive`)
+  - non-star notation (`c.1905+1G>A (*2A)/Reference`)
+- Returns `found`, `matchedDiplotype`, `guidance`, and every matching source record with its gene result, activity score, EHR priority and lookup key.
+- Several matching records are left ambiguous, never resolved to one. No result is calculated.
 
 ---
 
 ### `pgx_get_recommendations` <sub>tool</sub>
 
-- `mode: "drug"` requires exactly one `drugName` (exact, case-insensitive) or `drugId`. Drug-only browsing is `exploratory`, including optional `geneSymbol`/`population` filters. To match results, supply either `phenotype` or `activityScore` (with `geneSymbol` unless the drug has exactly one recommendation gene), or `geneResults` for 1–10 genes as `{ "GENE": { "kind": "phenotype" | "activityScore" | "alleleStatus", "value": "source value" } }`; the map excludes scalar result fields.
-- `mode: "genotype"` requires `genotype` with 1–10 gene/diplotype entries, optionally one drug selector; scalar results and `geneResults` are excluded. Every supplied genotype must resolve uniquely. Both modes accept an exact `population` filter and `limit` 1–50 (default 10), `offset` default 0.
-- `status` is `exploratory`, `matched`, `no_match`, `incomplete` or `unresolved`. Matched rows require every source genetic prerequisite; `incompleteMatches` lists identifiers and `missingGenes` without prescribing text. Omitted genes are never assumed normal or negative. Complete records retain populations, activity scores, allele statuses, `No Recommendation` and `n/a`; phenotype matching can retain several distinct scores.
+- `mode: "drug"` takes exactly one of `drugName` (exact, case-insensitive) or `drugId`.
+  - On its own, or with `geneSymbol` or `population`, it browses (`exploratory`).
+  - To match, add `phenotype` or `activityScore`. These need `geneSymbol` when the drug's recommendations involve several genes.
+  - Alternatively, add a `geneResults` map: 1–10 genes, each `{ kind: "phenotype" | "activityScore" | "alleleStatus", value }`.
+- `mode: "genotype"` takes `genotype`: 1–10 gene → diplotype entries, each of which must resolve uniquely. An optional drug selector narrows the results.
+- `mode: "results"` discovers across drugs from `geneResults`, or `geneSymbol` with one `phenotype`/`activityScore`. An optional drug selector narrows the results. Unrelated panel genes do not exclude a recommendation; conflicting results for its prerequisites do.
+- All modes accept an exact `population`, `limit` 1–50 (default 10) and `offset`. `incompleteLimit` 1–100 (default 25) and `incompleteOffset` page missing-gene diagnostics independently through `incompletePage.nextOffset`.
+- `status` is `exploratory`, `matched`, `no_match`, `incomplete` or `unresolved`. A row matches only when every gene in its lookup key has an explicit result. `incompleteMatches` lists the rows that need more genes, with their `missingGenes` and without prescribing text.
+- Empty-result notices distinguish unresolved drugs, absent recommendation tables, population mismatches and past-end pages. Where source coverage exists, a no-table notice links the guideline for consultation.
 
 ---
 
 ### `pgx_search_alleles` <sub>tool</sub>
 
-- Requires `geneSymbol`; optional exact `name` and `clinicalFunctionalStatus` filters. `limit` 1–100 (default 25), `offset` default 0; continue with `page.nextOffset`.
-- Complete allele evidence, embedded definition metadata and `populationFrequencies`. Definitions do not promise defining variants; frequency fractions stay fractions, missing values are not zero, inferred frequencies are not observed measurements, and population frequencies do not establish individual risk.
+- Requires `geneSymbol`. `name` matches literally first, then retries a matching gene-prefixed star allele without that prefix. `clinicalFunctionalStatus` matches literal text case-insensitively. Returned source spelling stays unchanged; `effectiveQuery` shows the allele name used.
+- `limit` defaults to 25; positive safe integers above 100 clamp to 100 with a notice. Nonpositive, fractional and unsafe limits fail before fetching. `offset` is a nonnegative safe integer.
+- The 24,000-byte soft budget measures the entire serialized tool result, including both response surfaces and enrichment. It cuts only between complete alleles, keeping every frequency row. An indivisible oversized first row sets `oversizedRow: true` with a notice. Follow `page.nextOffset` to reconstruct the remaining rows.
+- Returns allele function and evidence with definition metadata and `populationFrequencies`. Frequencies stay as source fractions, missing values stay missing, and inferred frequencies are flagged as inferred.
 
 ---
 
 ### `pgx_list_reference` <sub>tool</sub>
 
-- `topic`: `genes`, `phenotypes`, `cpic_levels`, `pgx_testing`, `classifications` or `input_formats`. `phenotypes` requires `geneSymbol`; `genes` optionally filters by it. Live topics accept `limit` 1–100 (default 25) and `offset` (default 0).
-- Live gene/result records retain distinct scores, consultation text and versions. Static topics return their complete vocabulary without an upstream request, reject gene filters and report `verificationDate` instead of a live access timestamp.
+- `topic` is one of:
+  - `genes` — optional `geneSymbol` filter
+  - `phenotypes` — requires `geneSymbol`
+  - `cpic_levels`, `pgx_testing`, `classifications`, `input_formats`
+- The two live topics (`genes`, `phenotypes`) page with `limit` 1–100 (default 25) and `offset`. They return full gene and gene-result records, including distinct activity scores, frequencies and consultation text.
+- Static topics return their whole vocabulary without calling the CPIC API. They reject `geneSymbol` and carry a `verificationDate`.
 
 ## Features
 
@@ -86,25 +107,26 @@ Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): s
 
 CPIC-specific:
 
-- A source lookup workflow: inspect reference values → discover pairs → retrieve guidelines → inspect allele/diplotype evidence → browse or match recommendations.
-- CPIC evaluation levels, ClinPGx testing labels and prescribing recommendation classifications remain separate. ClinPGx testing labels are not FDA labels.
-- Bounded requests: a 45-second workflow deadline, at most 100 HTTP attempts, three concurrent requests and two retries per request. Related scans cap at 2,000 rows (drug resolution at 500, guidelines at 100); `query_too_broad` fails instead of silently returning an incomplete scan.
+- One lookup chain: reference values → pairs → guidelines → allele and diplotype evidence → recommendations
+- CPIC evaluation levels, ClinPGx testing labels and recommendation classifications are kept separate. A testing label is not an FDA label, and an evaluated pair is not a recommendation.
+- Matching uses only results you supply. An omitted gene is never assumed normal, negative or `Indeterminate`. Phenotypes, decimal activity scores and HLA allele statuses are each checked against CPIC's own values.
+- Bounded workflows:
+  - 45-second deadline, at most 100 HTTP attempts, three concurrent requests, two retries per request
+  - Related scans stop at 2,000 rows (drug resolution 500). Guideline lists and detail views page at the source; related counts use exact source totals, with bounded scans only when totals are missing. Past a scan cap the call fails as `query_too_broad` rather than returning partial results.
 
 Agent-friendly output:
 
-- Provenance — exact request URLs, access timestamps, row versions and source license/policy links; API `v1` identifies the interface, not a database release or atomic snapshot.
-- Explicit outcomes — recommendation `status`, per-gene resolution diagnostics, missing prerequisites and actionable recovery guidance.
-- Complete data — `content[]` and `structuredContent` carry the same source data, including links and clinical text; `effectiveQuery`, `notices` and page metadata explain the result. `page.total` is null when a source count is unavailable.
+- **Provenance:** exact deduplicated request URLs, access timestamp, returned row versions, and license and policy links. Each version uses an RFC 6901 JSON Pointer into the result and a `requestIndex` into `requestUrls`. API `v1` names the interface, not a database release.
+- **Explicit outcomes:** recommendation `status`, per-gene `geneResolutions`, `incompleteMatches`, and typed error reasons with recovery text.
+- **Lossless text output:** `content[]` carries the complete result as JSON with one clickable link per distinct destination in each rendered block, matching `structuredContent`. `effectiveQuery`, `notices` and `page` (`total`, `nextOffset`) explain every result.
 
 ### Source attribution and clinical limitations
 
-Data comes from the [CPIC Database](https://api.cpicpgx.org/v1/) and [ClinPGx](https://www.clinpgx.org/). Consult the [CPIC data license](https://github.com/cpicpgx/cpic-data/blob/master/LICENSE.md) and [ClinPGx usage policy](https://www.clinpgx.org/page/dataUsagePolicy) for source terms; this repository's Apache-2.0 license covers its code.
+Data comes from the [CPIC Database](https://api.cpicpgx.org/v1/) and [ClinPGx](https://www.clinpgx.org/). The [CPIC data license](https://github.com/cpicpgx/cpic-data/blob/master/LICENSE.md) and the [ClinPGx usage policy](https://www.clinpgx.org/page/dataUsagePolicy) cover the source data; this repository's Apache-2.0 license covers its code.
 
-Database/API tables may omit guideline nuances or lag updates. Consult each linked guideline and its updates before clinical use. Results apply only to their stated genes, drugs, populations and indications; treatment decisions remain with the clinician and patient. The tools retrieve source evidence and match explicit results; they do not infer clinical results, calculate personal risk or synthesize patient-specific dosing. No patient record is stored by the service; genetic queries are sent to the upstream API and request URLs appear in responses.
+The database tables can omit guideline nuances or lag behind guideline updates, so check each linked guideline before clinical use. Results apply only to their stated genes, drugs, populations and indications, and treatment decisions remain with the clinician and patient. The server stores no patient records, but genetic queries are sent to the CPIC API, and the request URLs, which contain them, appear in responses.
 
 ## Getting started
-
-### Self-Hosted / Local
 
 Add the following to your MCP client configuration file:
 
@@ -115,7 +137,10 @@ Add the following to your MCP client configuration file:
       "type": "stdio",
       "command": "bunx",
       "args": ["@cyanheads/pharmacogenomics-guidelines-mcp-server@latest"],
-      "env": { "MCP_TRANSPORT_TYPE": "stdio", "MCP_LOG_LEVEL": "info" }
+      "env": {
+        "MCP_TRANSPORT_TYPE": "stdio",
+        "MCP_LOG_LEVEL": "info"
+      }
     }
   }
 }
@@ -130,7 +155,10 @@ Or with npx (no Bun required):
       "type": "stdio",
       "command": "npx",
       "args": ["-y", "@cyanheads/pharmacogenomics-guidelines-mcp-server@latest"],
-      "env": { "MCP_TRANSPORT_TYPE": "stdio", "MCP_LOG_LEVEL": "info" }
+      "env": {
+        "MCP_TRANSPORT_TYPE": "stdio",
+        "MCP_LOG_LEVEL": "info"
+      }
     }
   }
 }
@@ -150,7 +178,7 @@ Or with Docker:
 }
 ```
 
-For Streamable HTTP:
+For Streamable HTTP, set the transport and start the server:
 
 ```sh
 MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 bunx @cyanheads/pharmacogenomics-guidelines-mcp-server@latest
@@ -159,16 +187,34 @@ MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 bunx @cyanheads/pharmacogenomics-guid
 
 ### Prerequisites
 
-- [Bun v1.4.0](https://bun.sh/) or higher, or Node.js v24+.
-- Network access to `https://api.cpicpgx.org`; no API key is needed.
+- [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
+- Network access to `https://api.cpicpgx.org`. No API key is needed.
 
 ### Installation
 
+1. **Clone the repository:**
+
 ```sh
 git clone https://github.com/cyanheads/pharmacogenomics-guidelines-mcp-server.git
+```
+
+2. **Navigate into the directory:**
+
+```sh
 cd pharmacogenomics-guidelines-mcp-server
+```
+
+3. **Install dependencies:**
+
+```sh
 bun install
+```
+
+4. **Configure environment:**
+
+```sh
 cp .env.example .env
+# optional: adjust transport, logging, or telemetry settings
 ```
 
 ## Configuration
@@ -184,7 +230,7 @@ No server-specific environment variables are required.
 | `MCP_SESSION_MODE` | HTTP session mode: `stateless`, `stateful` or `auto`. | `stateless` |
 | `MCP_AUTH_MODE` | Authentication: `none`, `jwt` or `oauth`. | `none` |
 | `MCP_LOG_LEVEL` | Log level (`debug`, `info`, `warning`, `error`, etc.). | `debug` |
-| `OTEL_ENABLED` | Enable OpenTelemetry. | `false` |
+| `OTEL_ENABLED` | Enable [OpenTelemetry](https://github.com/cyanheads/mcp-ts-core/tree/main/docs/telemetry). | `false` |
 
 See [`.env.example`](./.env.example) for the common framework overrides.
 
@@ -195,7 +241,10 @@ See [`.env.example`](./.env.example) for the common framework overrides.
 - **Build and run the production version**:
 
   ```sh
+  # One-time build
   bun run rebuild
+
+  # Run the built server
   bun run start:http
   # or
   bun run start:stdio
@@ -204,17 +253,17 @@ See [`.env.example`](./.env.example) for the common framework overrides.
 - **Run checks and tests**:
 
   ```sh
-  bun run devcheck
-  bun run test
+  bun run devcheck  # Lints, formats, type-checks, and more
+  bun run test      # Runs the test suite
   ```
 
 ## Project structure
 
 | Directory | Purpose |
 |:---|:---|
-| `src/mcp-server/tools/definitions` | Six read-only tool definitions. |
+| `src/mcp-server/tools/definitions` | The six tool definitions and the `allToolDefinitions` registry. |
 | `src/mcp-server/tools/shared` | Paging schemas and lossless Markdown rendering. |
-| `src/services/cpic` | Fixed-host API requests, source records, discovery, evidence and matching. |
+| `src/services/cpic` | Fixed-host CPIC requests, source record schemas, discovery, evidence and recommendation matching. |
 | `tests/unit` | Service, tool contract, boundary and formatter tests. |
 | `docs` | Design contract and generated directory tree. |
 
@@ -224,7 +273,7 @@ See [`CLAUDE.md`](./CLAUDE.md) for development guidelines and architectural rule
 
 - Handlers throw, framework catches — no `try/catch` in tool logic
 - Use `ctx.log` for logging, `ctx.state` for storage
-- Register new tools and resources in the `createApp()` arrays in `src/index.ts`
+- Register new tools in `allToolDefinitions` (`src/mcp-server/tools/definitions/index.ts`), which `src/index.ts` passes to `createApp()`
 - Wrap external API calls: validate raw → normalize to domain type → return output schema; never fabricate missing fields
 
 ## Contributing

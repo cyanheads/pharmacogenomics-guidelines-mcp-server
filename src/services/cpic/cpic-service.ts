@@ -69,10 +69,10 @@ export interface CpicPage<E extends CpicEndpoint> {
   page: CpicPageInfo;
   requestUrl: string;
 }
-/** Source versions identify each nested row by its location in the fetched payload. */
+/** Source versions identify returned records by RFC 6901 JSON Pointer. */
 export interface CpicRowVersion {
   path: string;
-  requestUrl: string;
+  requestIndex: number;
   version: number;
 }
 /** Public data provenance; request URLs belong in responses, never logs. */
@@ -190,31 +190,11 @@ function classify(error: unknown): McpError {
   });
 }
 
-function versions(
-  value: unknown,
-  requestUrl: string,
-  path: string,
-  result: CpicRowVersion[],
-): void {
-  if (Array.isArray(value)) {
-    value.forEach((row, index) => {
-      versions(row, requestUrl, `${path}[${index}]`, result);
-    });
-  } else if (typeof value === 'object' && value !== null) {
-    if ('version' in value && typeof value.version === 'number')
-      result.push({ requestUrl, path, version: value.version });
-    for (const [key, nested] of Object.entries(value)) {
-      if (typeof nested === 'object' && nested !== null)
-        versions(nested, requestUrl, `${path}.${key}`, result);
-    }
-  }
-}
-
 /** One tool invocation's shared clock, HTTP-attempt count and provenance. */
 export class CpicWorkflow {
   private attempts = 0;
   private readonly urls = new Set<string>();
-  private readonly rowVersions: CpicRowVersion[] = [];
+  private readonly origins = new WeakMap<object, string>();
   private readonly accessedAt = new Date().toISOString();
 
   constructor(
@@ -224,17 +204,48 @@ export class CpicWorkflow {
   ) {}
 
   /** Snapshot provenance after all of the workflow's source calls finish. */
-  provenance(): CpicProvenance {
+  provenance(value?: unknown): CpicProvenance {
+    const requestUrls = [...this.urls];
+    const rowVersions: CpicRowVersion[] = [];
+    const visit = (current: unknown, path: string): void => {
+      if (typeof current !== 'object' || current === null) return;
+      const origin = this.origins.get(current);
+      if (origin && 'version' in current && typeof current.version === 'number')
+        rowVersions.push({
+          path,
+          requestIndex: requestUrls.indexOf(origin),
+          version: current.version,
+        });
+      for (const [key, nested] of Object.entries(current)) {
+        if (path === '' && key === 'provenance') continue;
+        visit(nested, `${path}/${key.replace(/~/g, '~0').replace(/\//g, '~1')}`);
+      }
+    };
+    visit(value, '');
     return {
       source: 'CPIC Database',
       primarySourceUrl: 'https://www.clinpgx.org/',
       apiVersion: 'v1',
       accessedAt: this.accessedAt,
-      requestUrls: [...this.urls],
+      requestUrls,
       licenseUrl: 'https://github.com/cpicpgx/cpic-data/blob/master/LICENSE.md',
       policyUrl: 'https://www.clinpgx.org/page/dataUsagePolicy',
-      rowVersions: [...this.rowVersions],
+      rowVersions,
     };
+  }
+
+  /** Preserve source origin when adding joined evidence to a source record. */
+  join<T extends object, U extends object>(record: T, additions: U): T & U {
+    const joined = { ...record, ...additions };
+    const origin = this.origins.get(record);
+    if (origin) this.origins.set(joined, origin);
+    return joined;
+  }
+
+  private remember(value: unknown, requestUrl: string): void {
+    if (typeof value !== 'object' || value === null) return;
+    this.origins.set(value, requestUrl);
+    for (const nested of Object.values(value)) this.remember(nested, requestUrl);
   }
 
   /** Fetch one page, probing one extra row when the source omits an exact count. */
@@ -313,7 +324,7 @@ export class CpicWorkflow {
       },
     );
     const items = result.rows.slice(0, limit);
-    versions(items, requestUrl, '$', this.rowVersions);
+    this.remember(items, requestUrl);
     const next = offset + items.length;
     const more = result.total === null ? result.rows.length > limit : next < result.total;
     const nextOffset = more && Number.isSafeInteger(next) && next > offset ? next : null;
@@ -324,6 +335,17 @@ export class CpicWorkflow {
       page: { limit, offset, returned: items.length, total: result.total, nextOffset },
       requestUrl,
     };
+  }
+
+  /** Read an exact source count, scanning only when count metadata is unavailable. */
+  async count<E extends CpicEndpoint>(
+    endpoint: E,
+    query: Omit<CpicQuery, 'limit' | 'offset'> = {},
+  ): Promise<number> {
+    const first = await this.page(endpoint, { ...query, limit: 1 });
+    if (first.page.total !== null) return first.page.total;
+    if (first.page.nextOffset === null) return first.items.length;
+    return (await this.scan(endpoint, query)).length;
   }
 
   /** Exhaust a bounded related list; overflow fails instead of dropping source rows. */
@@ -357,13 +379,22 @@ export class CpicWorkflow {
 export class CpicService {
   /** Bound the complete tool workflow, including all requests, queues and retries. */
   workflow<T>(ctx: Context, run: (workflow: CpicWorkflow) => Promise<T>): Promise<T> {
-    return withRetry(({ signal }) => run(new CpicWorkflow(ctx, signal, Date.now() + 45_000)), {
-      maxRetries: 0,
-      signal: ctx.signal,
-      deadlineMs: 45_000,
-      operation: 'CPIC workflow',
-      context: ctx,
-    });
+    return withRetry(
+      async ({ signal }) => {
+        const workflow = new CpicWorkflow(ctx, signal, Date.now() + 45_000);
+        const result = await run(workflow);
+        if (typeof result === 'object' && result !== null && 'provenance' in result)
+          result.provenance = workflow.provenance(result);
+        return result;
+      },
+      {
+        maxRetries: 0,
+        signal: ctx.signal,
+        deadlineMs: 45_000,
+        operation: 'CPIC workflow',
+        context: ctx,
+      },
+    );
   }
 }
 let service: CpicService | undefined;

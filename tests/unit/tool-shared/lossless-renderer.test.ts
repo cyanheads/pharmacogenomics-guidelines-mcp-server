@@ -46,11 +46,11 @@ describe('lossless text twin', () => {
     expect(parsed.links).toEqual([
       'https://example.org/key',
       url,
-      url,
       'https://example.org/paper_(a)',
       'https://example.org/next',
     ]);
     expect(parse(formatLossless(value)[0]?.text ?? '')).toEqual(parsed);
+    expect(parse(renderLossless(value))).toEqual(parsed);
   });
   it.each([
     'https://example.org/a.',

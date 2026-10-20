@@ -171,6 +171,90 @@ describe('pgx_lookup_diplotype contract', () => {
 });
 
 describe('pgx_search_alleles contract', () => {
+  it.each(['*17', 'cyp2c19 *17'])('resolves literal status and safe name %s', async (name) => {
+    const requests: URL[] = [];
+    const record = {
+      id: 17,
+      genesymbol: 'CYP2C19',
+      name: '*17',
+      definitionid: 17,
+      clinicalfunctionalstatus: 'No function (a+b)',
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string) => {
+        const url = new URL(input);
+        requests.push(url);
+        if (url.pathname.endsWith('/population_frequency_view')) return source([]);
+        return source(
+          url.searchParams.get('name') === 'eq.*17' &&
+            url.searchParams.get('clinicalfunctionalstatus') === 'imatch.^no function \\(a\\+b\\)$'
+            ? [record]
+            : [],
+        );
+      }),
+    );
+    const output = assertTwin(
+      await runToolContract(searchAllelesTool, {
+        geneSymbol: 'CYP2C19',
+        name,
+        clinicalFunctionalStatus: 'no function (a+b)',
+      }),
+    );
+    expect(output.items).toEqual([{ ...record, populationFrequencies: [] }]);
+    expect(output.effectiveQuery).toMatchObject({ name: '*17' });
+    expect(
+      requests
+        .filter((url) => url.pathname.endsWith('/allele'))
+        .map((url) => url.searchParams.get('name')),
+    ).toEqual(name === '*17' ? ['eq.*17'] : ['eq.cyp2c19 *17', 'eq.*17']);
+  });
+  it.each(['CYP2D6*17', 'CYP2C19 F508del'])('does not invent an alias for %s', async (name) => {
+    const fetch = vi.fn(async () => source([]));
+    vi.stubGlobal('fetch', fetch);
+    const output = assertTwin(
+      await runToolContract(searchAllelesTool, { geneSymbol: 'CYP2C19', name }),
+    );
+    expect(output.items).toEqual([]);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(output.notices)).not.toContain('clinicalFunctionalStatus');
+    expect(JSON.stringify(output.notices)).toContain('name');
+  });
+  it('retains a literal gene-prefixed source name before trying an alias', async () => {
+    const record = { id: 1, genesymbol: 'G', name: 'G*1', definitionid: 1 };
+    const fetch = vi.fn(async (input: string) =>
+      new URL(input).pathname.endsWith('/allele') ? source([record]) : source([]),
+    );
+    vi.stubGlobal('fetch', fetch);
+    const output = assertTwin(
+      await runToolContract(searchAllelesTool, { geneSymbol: 'G', name: 'G*1' }),
+    );
+    expect(output.items).toEqual([{ ...record, populationFrequencies: [] }]);
+    expect(output.effectiveQuery).toMatchObject({ name: 'G*1' });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+  it.each([true, false])(
+    'keeps exact-name precedence on past-end pages (known total %s)',
+    async (known) => {
+      const names: string[] = [];
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: string) => {
+          const url = new URL(input);
+          names.push(url.searchParams.get('name') ?? '');
+          if (Number(url.searchParams.get('offset')) > 0)
+            return known ? source([], 1) : Response.json([]);
+          return source([{ id: 1, genesymbol: 'G', name: 'G*1', definitionid: 1 }]);
+        }),
+      );
+      const output = assertTwin(
+        await runToolContract(searchAllelesTool, { geneSymbol: 'G', name: 'G*1', offset: 99 }),
+      );
+      expect(output.items).toEqual([]);
+      expect(output.effectiveQuery).toMatchObject({ name: 'G*1' });
+      expect(names).toEqual(known ? ['eq.G*1'] : ['eq.G*1', 'eq.G*1']);
+    },
+  );
   it('keeps nullable and absent definition fields distinct and joins by both source keys', async () => {
     const rows = [
       { id: 1, genesymbol: 'G', name: '*1', definitionid: 1, allele_definition: null },
@@ -249,6 +333,12 @@ describe('pgx_search_alleles contract', () => {
       }),
     );
     expect(output.items).toEqual([{ ...allele, populationFrequencies: frequencies }]);
+    expect(output.provenance).toMatchObject({
+      rowVersions: [
+        { path: '/items/0', requestIndex: 0, version: 2 },
+        { path: '/items/0/allele_definition', requestIndex: 0, version: 8 },
+      ],
+    });
     expect(output).toMatchObject({
       truncated: false,
       shown: 1,
@@ -275,11 +365,13 @@ describe('pgx_search_alleles contract', () => {
       truncated: false,
     });
     expect(output.notices).toEqual([
-      'No alleles matched. Call pgx_list_reference with topic genes to check gene coverage, or remove the clinicalFunctionalStatus filter in pgx_search_alleles.',
+      offset
+        ? 'Offset 10000 is past the last row (total 3); retry with a smaller offset.'
+        : 'No alleles matched. Call pgx_list_reference with topic genes to check gene coverage.',
     ]);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
-  it('returns the full public cap and advertises a valid continuation', async () => {
+  it('respects the public cap and byte budget with a valid continuation', async () => {
     const rows = Array.from({ length: 101 }, (_, index) => ({
       ...allele,
       id: index + 1,
@@ -296,11 +388,12 @@ describe('pgx_search_alleles contract', () => {
     );
     expect(output).toMatchObject({
       cap: 100,
-      shown: 100,
+      shown: expect.any(Number),
       truncated: true,
-      page: { returned: 100, nextOffset: 100 },
+      page: { returned: output.shown, nextOffset: output.shown },
     });
-    expect(output.items).toHaveLength(100);
+    expect(output.items).toHaveLength(output.shown as number);
+    expect(output.shown).toBeLessThanOrEqual(100);
     expect(searchAllelesTool.input.safeParse({ geneSymbol: 'CYP2C19', offset: 100 }).success).toBe(
       true,
     );

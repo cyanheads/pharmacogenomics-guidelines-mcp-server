@@ -1,6 +1,6 @@
 # pharmacogenomics-guidelines-mcp-server - Directory Structure
 
-Generated on: 2026-10-20 06:03:57
+Generated on: 2026-10-20 07:23:55
 
 ```text
 pharmacogenomics-guidelines-mcp-server/
@@ -150,6 +150,7 @@ pharmacogenomics-guidelines-mcp-server/
 │   │       │   └── search-alleles.tool.ts
 │   │       └── shared/
 │   │           ├── lossless-renderer.ts
+│   │           ├── response-budget.ts
 │   │           └── schemas.ts
 │   ├── services/
 │   │   └── cpic/
@@ -157,6 +158,7 @@ pharmacogenomics-guidelines-mcp-server/
 │   │       ├── discovery.ts
 │   │       ├── evidence.ts
 │   │       ├── index.ts
+│   │       ├── notices.ts
 │   │       ├── provenance.ts
 │   │       ├── query.ts
 │   │       ├── recommendations.ts
@@ -180,9 +182,15 @@ pharmacogenomics-guidelines-mcp-server/
 │       ├── recommendations/
 │       │   ├── boundaries.test.ts
 │       │   ├── fixtures.ts
-│       │   └── recommendations-contract.test.ts
+│       │   ├── notices.test.ts
+│       │   ├── partial-candidates.test.ts
+│       │   ├── recommendations-contract.test.ts
+│       │   ├── results-mode.test.ts
+│       │   └── safe-errors.test.ts
 │       └── tool-shared/
 │           ├── lossless-renderer.test.ts
+│           ├── notices.test.ts
+│           ├── response-budget.test.ts
 │           └── schemas.test.ts
 ├── .dockerignore
 ├── .env.example

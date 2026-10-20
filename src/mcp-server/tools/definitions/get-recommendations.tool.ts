@@ -52,9 +52,9 @@ const geneResultSchema = z
   .describe('An explicit gene result; distinct kinds are never inferred from one another.');
 const inputSchema = z.object({
   mode: z
-    .enum(['drug', 'genotype'])
+    .enum(['drug', 'genotype', 'results'])
     .describe(
-      'drug requires exactly one drugName or drugId; genotype requires a genotype map and optionally one drug selector.',
+      'drug requires one drugName or drugId; genotype requires genotype; results requires geneResults or geneSymbol with phenotype/activityScore. Genotype/results optionally accept one drug selector.',
     ),
   drugName: optionalTextSchema(
     200,
@@ -106,6 +106,22 @@ const inputSchema = z.object({
     'Exact source population after outer whitespace trimming; all matching rows are retained.',
   ),
   ...recommendationPaginationFields,
+  incompleteLimit: z
+    .number()
+    .int()
+    .min(1)
+    .max(100)
+    .default(25)
+    .describe('Maximum incomplete diagnostics per page (default 25; maximum 100).'),
+  incompleteOffset: z
+    .number()
+    .int()
+    .min(0)
+    .max(Number.MAX_SAFE_INTEGER)
+    .default(0)
+    .describe(
+      'Independent zero-based incomplete diagnostic offset; follow incompletePage.nextOffset.',
+    ),
 });
 const resolutionSchema = z
   .object({
@@ -117,7 +133,6 @@ const resolutionSchema = z
       .array(DiplotypeSchema)
       .describe('Every source match; more than one remains ambiguous.'),
     guidance: z.string().describe('Recovery guidance for an unresolved or ambiguous genotype.'),
-    provenance: provenanceSchema,
   })
   .describe('Source resolution of one explicitly supplied genotype.');
 
@@ -125,7 +140,7 @@ const resolutionSchema = z
 export const getRecommendationsTool = tool('pgx_get_recommendations', {
   title: 'Get recommendations',
   description:
-    'Browse CPIC recommendations in drug mode with one exact drugName or drugId, or match explicit phenotype, activityScore or geneResults. In genotype mode supply 1–10 gene/diplotype entries; all must resolve uniquely. Use pgx_list_reference topic phenotypes for source values and pgx_lookup_diplotype for notation. Matched recommendations require every source lookup key; omitted genes are never assumed normal or negative. Preserve population, score, No Recommendation and n/a distinctions. Drug-only browsing is exploratory; consult each linked guideline before clinical use.',
+    'Browse CPIC recommendations in drug mode with one exact drugName or drugId. Match across drugs in results mode with geneResults or geneSymbol plus phenotype/activityScore, or genotype mode with 1–10 uniquely resolved gene/diplotype entries. Both matching modes accept an optional drug. Use pgx_list_reference topic phenotypes for source values. Every matched prerequisite must be explicit; omitted genes are never normal or negative. Preserve populations, scores, classifications and source text. Follow page.nextOffset and incompletePage.nextOffset independently; consult linked guidelines before clinical use.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: inputSchema,
   output: z.object({
@@ -158,6 +173,9 @@ export const getRecommendationsTool = tool('pgx_get_recommendations', {
       .array(resolutionSchema)
       .describe('Per-gene genotype diagnostics, including ambiguity and source records.'),
     page: pageSchema,
+    incompletePage: pageSchema.describe(
+      'Independent page of incomplete prerequisite diagnostics; totals computed before either page.',
+    ),
     clinicalCaveat: z.string().describe('Source limitations and required clinical qualification.'),
     provenance: provenanceSchema,
   }),
@@ -239,16 +257,24 @@ export const getRecommendationsTool = tool('pgx_get_recommendations', {
   async handler(input, ctx) {
     function normalizeMap<T>(
       map: Record<string, T> | undefined,
-      normalize: (value: T) => T,
+      name: 'genotype' | 'geneResults',
+      normalize: (value: T, index: number) => T,
     ): Record<string, T> | undefined {
       if (map === undefined) return undefined;
       const entries = Object.entries(map);
-      if (entries.length < 1 || entries.length > 10) throw ctx.fail('invalid_selector');
+      if (entries.length < 1 || entries.length > 10)
+        throw ctx.fail('invalid_selector', `${name} has ${entries.length} entries; supply 1–10.`);
       const normalized: Record<string, T> = Object.create(null);
-      for (const [key, value] of entries) {
+      for (const [index, [key, value]] of entries.entries()) {
         const gene = key.trim().toUpperCase();
-        if (!gene || Object.hasOwn(normalized, gene)) throw ctx.fail('invalid_selector');
-        normalized[gene] = normalize(value);
+        if (!gene)
+          throw ctx.fail('invalid_selector', `${name} entry ${index + 1} has a blank gene key.`);
+        if (Object.hasOwn(normalized, gene))
+          throw ctx.fail(
+            'invalid_selector',
+            `${name} entry ${index + 1} duplicates a gene after normalization.`,
+          );
+        normalized[gene] = normalize(value, index);
       }
       return normalized;
     }
@@ -260,35 +286,71 @@ export const getRecommendationsTool = tool('pgx_get_recommendations', {
       input.activityScore === undefined ? undefined : String(input.activityScore),
     );
     const population = optionalText(input.population);
-    const genotype = normalizeMap(input.genotype, (value) => {
+    const genotype = normalizeMap(input.genotype, 'genotype', (value, index) => {
       const result = value.trim();
-      if (!result) throw ctx.fail('invalid_selector');
+      if (!result)
+        throw ctx.fail('invalid_selector', `genotype entry ${index + 1} has a blank diplotype.`);
       return result;
     });
-    const geneResults = normalizeMap<ExplicitGeneResult>(input.geneResults, (result) => {
-      const value = result.value.trim();
-      if (!value) throw ctx.fail('invalid_selector');
-      return { ...result, value };
-    });
+    const geneResults = normalizeMap<ExplicitGeneResult>(
+      input.geneResults,
+      'geneResults',
+      (result, index) => {
+        const value = result.value.trim();
+        if (!value)
+          throw ctx.fail(
+            'invalid_selector',
+            `geneResults entry ${index + 1} (${result.kind}) has a blank value.`,
+          );
+        return { ...result, value };
+      },
+    );
+    if (drugName !== undefined && drugId !== undefined)
+      throw ctx.fail('invalid_selector', 'drugName and drugId are mutually exclusive.');
+    if (phenotype !== undefined && activityScore !== undefined)
+      throw ctx.fail('invalid_selector', 'phenotype and activityScore are mutually exclusive.');
     if (
-      (drugName !== undefined && drugId !== undefined) ||
-      (phenotype !== undefined && activityScore !== undefined) ||
-      (geneResults !== undefined &&
-        (geneSymbol !== undefined || phenotype !== undefined || activityScore !== undefined)) ||
-      (input.mode === 'drug' &&
-        (genotype !== undefined || (drugName === undefined && drugId === undefined))) ||
-      (input.mode === 'genotype' &&
-        (genotype === undefined ||
-          geneSymbol !== undefined ||
-          phenotype !== undefined ||
-          activityScore !== undefined ||
-          geneResults !== undefined))
+      geneResults !== undefined &&
+      (geneSymbol !== undefined || phenotype !== undefined || activityScore !== undefined)
     )
-      throw ctx.fail('invalid_selector');
+      throw ctx.fail(
+        'invalid_selector',
+        'geneResults excludes geneSymbol, phenotype and activityScore.',
+      );
+    if (input.mode === 'drug' && genotype !== undefined)
+      throw ctx.fail('invalid_selector', 'Drug mode excludes genotype.');
+    if (input.mode === 'drug' && drugName === undefined && drugId === undefined)
+      throw ctx.fail('invalid_selector', 'Drug mode requires one drugName or drugId.');
+    if (input.mode === 'genotype' && genotype === undefined)
+      throw ctx.fail('invalid_selector', 'Genotype mode requires a genotype map.');
+    if (
+      input.mode === 'genotype' &&
+      (geneSymbol !== undefined ||
+        phenotype !== undefined ||
+        activityScore !== undefined ||
+        geneResults !== undefined)
+    )
+      throw ctx.fail(
+        'invalid_selector',
+        'Genotype mode excludes geneSymbol, phenotype, activityScore and geneResults.',
+      );
+    if (input.mode === 'results' && genotype !== undefined)
+      throw ctx.fail('invalid_selector', 'Results mode excludes genotype.');
+    if (
+      input.mode === 'results' &&
+      geneResults === undefined &&
+      (geneSymbol === undefined || (phenotype === undefined && activityScore === undefined))
+    )
+      throw ctx.fail(
+        'invalid_selector',
+        'Results mode requires geneResults or geneSymbol with one phenotype or activityScore.',
+      );
     const effectiveQuery: RecommendationQuery = {
       mode: input.mode,
       limit: input.limit,
       offset: input.offset,
+      incompleteLimit: input.incompleteLimit,
+      incompleteOffset: input.incompleteOffset,
       ...(drugName !== undefined && { drugName }),
       ...(drugId !== undefined && { drugId }),
       ...(geneSymbol !== undefined && { geneSymbol }),

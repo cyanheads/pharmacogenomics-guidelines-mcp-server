@@ -25,6 +25,7 @@ export const endpointColumns = {
   diplotype: ['genesymbol', 'diplotype'],
   recommendation: [
     'id',
+    'lookupkey',
     'drugid',
     'guidelineid',
     'phenotypes',

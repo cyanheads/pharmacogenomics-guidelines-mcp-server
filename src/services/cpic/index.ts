@@ -5,6 +5,7 @@
 export * from './cpic-service.js';
 export * from './discovery.js';
 export * from './evidence.js';
+export * from './notices.js';
 export * from './provenance.js';
 export * from './query.js';
 export * from './recommendations.js';

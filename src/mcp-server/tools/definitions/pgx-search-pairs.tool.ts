@@ -5,6 +5,7 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import {
   DrugSchema,
+  emptyPageNotice,
   getCpicService,
   PairSchema,
   provenanceSchema,
@@ -136,7 +137,10 @@ export const pgxSearchPairs = tool('pgx_search_pairs', {
     const notices: string[] = [];
     if (result.items.length === 0)
       notices.push(
-        'No gene–drug pairs matched. Call pgx_list_reference with topic genes or broaden pgx_search_pairs filters.',
+        emptyPageNotice(
+          result.page,
+          'No gene–drug pairs matched. Call pgx_list_reference with topic genes or broaden pgx_search_pairs filters.',
+        ),
       );
     if (!query.includeRetired && query.cpicLevel !== 'Retired')
       notices.push('Retired pairs are excluded; set includeRetired=true to include them.');

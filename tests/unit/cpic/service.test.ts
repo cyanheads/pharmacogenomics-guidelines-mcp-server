@@ -18,6 +18,43 @@ afterEach(() => {
 const service = new CpicService();
 
 describe('CPIC workflow paging', () => {
+  it('uses exact totals without scanning unselected records', async () => {
+    const fetch = vi.fn(async (_input: string) =>
+      Response.json([{ symbol: 'G' }], { headers: { 'content-range': '0-0/9000' } }),
+    );
+    vi.stubGlobal('fetch', fetch);
+    expect(await service.workflow(createMockContext(), (workflow) => workflow.count('gene'))).toBe(
+      9000,
+    );
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(new URL(fetch.mock.calls[0]?.[0] ?? '').searchParams.get('limit')).toBe('2');
+  });
+  it('attributes only returned nested records with escaped JSON pointers', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        Response.json([
+          { id: 1, version: 2, 'a/b~c': [{ version: 3, provenance: { version: 4 } }] },
+          { id: 2, version: 9 },
+        ]),
+      ),
+    );
+    const result = await service.workflow(createMockContext(), async (workflow) => {
+      const rows = await workflow.scan('recommendation');
+      return { items: [rows[0]], provenance: workflow.provenance() };
+    });
+    expect(result.items[0]).toEqual({
+      id: 1,
+      version: 2,
+      'a/b~c': [{ version: 3, provenance: { version: 4 } }],
+    });
+    expect(result.provenance.requestUrls).toHaveLength(1);
+    expect(result.provenance.rowVersions).toEqual([
+      { path: '/items/0', requestIndex: 0, version: 2 },
+      { path: '/items/0/a~1b~0c/0', requestIndex: 0, version: 3 },
+      { path: '/items/0/a~1b~0c/0/provenance', requestIndex: 0, version: 4 },
+    ]);
+  });
   it('follows two exact-count pages and captures nested row versions', async () => {
     const fetch = vi.fn(async (input: string, init: RequestInit) => {
       expect(init.redirect).toBe('error');
@@ -36,9 +73,9 @@ describe('CPIC workflow paging', () => {
       expect(first.page).toEqual({ limit: 2, offset: 0, returned: 2, total: 3, nextOffset: 2 });
       const second = await workflow.page('recommendation', { limit: 2, offset: 2 });
       expect(second.page.nextOffset).toBeNull();
-      expect(workflow.provenance().rowVersions).toEqual([
-        { path: '$[0]', requestUrl: first.requestUrl, version: 2 },
-        { path: '$[0].guideline', requestUrl: first.requestUrl, version: 4 },
+      expect(workflow.provenance({ items: first.items }).rowVersions).toEqual([
+        { path: '/items/0', requestIndex: 0, version: 2 },
+        { path: '/items/0/guideline', requestIndex: 0, version: 4 },
       ]);
       expect(workflow.provenance().requestUrls).toEqual([first.requestUrl, second.requestUrl]);
     });

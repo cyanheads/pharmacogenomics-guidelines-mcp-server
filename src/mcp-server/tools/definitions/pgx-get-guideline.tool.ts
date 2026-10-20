@@ -13,15 +13,30 @@ import {
   PairSchema,
   provenanceSchema,
 } from '@/services/cpic/index.js';
-import { formatLossless, renderLossless } from '../shared/lossless-renderer.js';
+import { formatLossless } from '../shared/lossless-renderer.js';
 import {
+  budgetNotices,
+  budgetResponse,
+  budgetTrailers,
+  slicedPage,
+} from '../shared/response-budget.js';
+import {
+  budgetPaginationFields,
+  cappedEnrichmentFields,
   drugIdSchema,
   optionalText,
   optionalTextSchema,
-  sharedEnrichmentFields,
+  pageSchema,
+  paginationFields,
 } from '../shared/schemas.js';
 
 const fields = {
+  view: z
+    .enum(['summary', 'drugs', 'pairs'])
+    .default('summary')
+    .describe(
+      'Summary pages guideline descriptors; drugs or pairs requires by=id and pages only that related collection.',
+    ),
   by: z
     .enum(['id', 'gene', 'drug'])
     .describe(
@@ -42,29 +57,44 @@ const fields = {
   ),
   drugId: drugIdSchema,
 };
-/** Return every matching guideline and full related source drug and pair records. */
+/** Page guideline descriptors or one selected complete related collection. */
 export const pgxGetGuideline = tool('pgx_get_guideline', {
   title: 'Get guideline coverage',
   description:
-    'Retrieve guideline coverage by source ID, exact gene symbol or exact drug name/ID. Gene queries return every matching guideline. Drug names resolving to several IDs return candidates for an explicit retry with drugId. Missing coverage is a successful found=false response. Related drugs and pairs are complete bounded lists; consult the linked guideline before clinical use.',
+    'Retrieve guideline coverage by source ID, exact gene symbol or exact drug name/ID. Default summary pages complete guideline records with exact drugCount/pairCount. view=drugs or pairs requires by=id and pages only that related collection, retaining its guideline descriptor. Ambiguous drug names page candidates for retry with drugId. Follow page.nextOffset; the 24,000-byte soft budget cuts only between complete rows, with oversizedRow for an indivisible exception. Missing coverage is found=false. Consult linked guidelines before clinical use.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
-  input: z.object(fields),
+  input: z.object({ ...fields, ...budgetPaginationFields }),
   output: z.object({
+    view: z.enum(['summary', 'drugs', 'pairs']).describe('Selected guideline view.'),
+    oversizedRow: z
+      .boolean()
+      .describe('Whether one complete indivisible row exceeds the soft byte budget.'),
+    page: pageSchema,
     found: z.boolean().describe('Whether guideline coverage was found.'),
     guidelines: z
       .array(
         z
           .object({
             record: GuidelineSchema.describe('Complete source guideline.'),
-            drugs: z.array(DrugSchema).describe('All source drugs assigned to this guideline.'),
-            pairs: z.array(PairSchema).describe('All pairs linked by exact guideline URL.'),
+            drugCount: z.number().int().min(0).describe('Exact number of related source drugs.'),
+            pairCount: z
+              .number()
+              .int()
+              .min(0)
+              .describe('Exact number of pairs linked by guideline URL.'),
           })
-          .describe('Guideline and its complete related records.'),
+          .describe('Complete guideline record with exact related-record counts.'),
       )
-      .describe('Every matching guideline with related records.'),
+      .describe(
+        'Paged complete guideline descriptors, or the retained descriptor for a related view.',
+      ),
+    drugs: z.array(DrugSchema).optional().describe('Selected drugs page; omitted in other views.'),
+    pairs: z.array(PairSchema).optional().describe('Selected pairs page; omitted in other views.'),
     candidates: z
       .array(DrugSchema)
-      .describe('Exact drug-name candidates when resolution is ambiguous.'),
+      .describe(
+        'Paged exact drug-name candidates when resolution is ambiguous; page and shown then refer to candidates.',
+      ),
     guidance: z.string().describe('Next lookup step when missing or ambiguous; empty when found.'),
     clinicalCaveat: z
       .literal(clinicalCaveat)
@@ -72,13 +102,12 @@ export const pgxGetGuideline = tool('pgx_get_guideline', {
     provenance: provenanceSchema,
   }),
   enrichment: {
-    effectiveQuery: z.object(fields).describe('Normalized guideline selectors.'),
-    ...sharedEnrichmentFields,
+    effectiveQuery: z
+      .object({ ...fields, ...paginationFields })
+      .describe('Normalized guideline selectors and effective page bounds.'),
+    ...cappedEnrichmentFields,
   },
-  enrichmentTrailer: {
-    effectiveQuery: { render: (v) => renderLossless(v, 'effectiveQuery') },
-    notices: { render: (v) => renderLossless(v, 'notices') },
-  },
+  enrichmentTrailer: budgetTrailers,
   errors: [
     {
       reason: 'invalid_selector',
@@ -121,7 +150,7 @@ export const pgxGetGuideline = tool('pgx_get_guideline', {
       thrownBy: 'service',
     },
   ],
-  async handler(input, ctx) {
+  handler(input, ctx) {
     const geneSymbol = optionalText(input.geneSymbol)?.toUpperCase(),
       drugName = optionalText(input.drugName),
       drugId = optionalText(input.drugId);
@@ -157,11 +186,54 @@ export const pgxGetGuideline = tool('pgx_get_guideline', {
         'invalid_selector',
         'Supply only the selectors required for the chosen by mode.',
       );
-    const result = await getCpicService().workflow(ctx, (workflow) =>
-      getGuideline(workflow, selector),
-    );
-    ctx.enrich({ effectiveQuery: selector, notices: result.found ? [] : [result.guidance] });
-    return { ...result, clinicalCaveat } as const;
+    if (input.view !== 'summary' && selector.by !== 'id')
+      throw ctx.fail(
+        'invalid_selector',
+        'Related drugs or pairs views require by=id and guidelineId.',
+      );
+    const limit = Math.min(input.limit, 100);
+    const effectiveQuery = { ...selector, view: input.view, limit, offset: input.offset };
+    return getCpicService().workflow(ctx, async (workflow) => {
+      const result = await getGuideline(workflow, selector, {
+        view: input.view,
+        limit,
+        offset: input.offset,
+      });
+      const returned = result.page.returned;
+      const selected = budgetResponse(returned, (count, oversizedRow, trimmed) => {
+        const domain = {
+          found: result.found,
+          view: input.view,
+          oversizedRow,
+          guidelines:
+            input.view === 'summary' ? result.guidelines.slice(0, count) : result.guidelines,
+          ...(input.view === 'drugs' && { drugs: result.drugs?.slice(0, count) ?? [] }),
+          ...(input.view === 'pairs' && { pairs: result.pairs?.slice(0, count) ?? [] }),
+          candidates: result.candidates.slice(0, count),
+          guidance: result.guidance,
+          clinicalCaveat: clinicalCaveat as typeof clinicalCaveat,
+          page: slicedPage(result.page, count),
+          provenance: result.provenance,
+        };
+        domain.provenance = workflow.provenance(domain);
+        return {
+          domain,
+          enrichment: {
+            effectiveQuery,
+            notices: [
+              ...(result.found ? [] : [result.guidance]),
+              ...(input.limit > 100 ? ['Requested limit clamped to the 100-row cap.'] : []),
+              ...budgetNotices(oversizedRow, trimmed),
+            ],
+            truncated: domain.page.nextOffset !== null,
+            shown: count,
+            cap: limit,
+          },
+        };
+      });
+      ctx.enrich(selected.enrichment);
+      return selected.domain;
+    });
   },
   format: formatLossless,
 });

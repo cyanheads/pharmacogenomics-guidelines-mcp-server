@@ -2,6 +2,8 @@
  * @fileoverview Shared input primitives preserve blank forms and safe paging bounds.
  * @module tests/unit/tool-shared/schemas.test
  */
+
+import { z } from '@cyanheads/mcp-ts-core';
 import { describe, expect, it } from 'vitest';
 import {
   atcIdSchema,
@@ -11,8 +13,27 @@ import {
   rxnormIdSchema,
 } from '@/mcp-server/tools/shared/schemas.js';
 import { buildCpicUrl } from '@/services/cpic/query.js';
+import { recordSchemas } from '@/services/cpic/records.js';
 
 describe('shared input boundaries', () => {
+  it.each([1.5, Number.MAX_SAFE_INTEGER + 1])(
+    'keeps runtime source integer validation for %s',
+    (id) => {
+      expect(recordSchemas.guideline.safeParse({ id, name: 'G' }).success).toBe(false);
+      expect(recordSchemas.guideline.safeParse({ id: 1, name: 'G', version: id }).success).toBe(
+        false,
+      );
+    },
+  );
+  it('advertises unconstrained source integers without safe-range metadata', () => {
+    const schema = z.toJSONSchema(recordSchemas.guideline);
+    expect(schema.properties?.id).toEqual({
+      type: 'integer',
+      description: 'Source record identifier.',
+    });
+    expect(JSON.stringify(schema.properties?.version)).not.toContain('9007199254740991');
+    expect(z.toJSONSchema(paginationFields.limit)).toMatchObject({ minimum: 1, maximum: 100 });
+  });
   it.each([rxnormIdSchema, atcIdSchema])(
     'rejects long malformed identifiers promptly',
     (schema) => {

@@ -29,16 +29,17 @@ export function renderLossless(value: unknown, path = '$'): string {
   const json = JSON.stringify(value, null, 2);
   if (json === undefined) throw new TypeError('The rendered value must be JSON-serializable.');
   const result = markdown().codeBlock(json, 'json');
+  const linked = new Set<string>();
 
   function visit(current: unknown, currentPath: string): void {
     if (typeof current === 'string') {
       for (const [index, match] of [...current.matchAll(/https?:\/\/[^\s<>"`]+/g)].entries()) {
+        const destination = match[0] === current ? match[0] : embeddedUrl(match[0]);
+        if (linked.has(destination)) continue;
+        linked.add(destination);
         result
           .blankLine()
-          .link(
-            escapeMarkdown(`${currentPath} [${index + 1}]`),
-            escapeMarkdown(match[0] === current ? match[0] : embeddedUrl(match[0])),
-          )
+          .link(escapeMarkdown(`${currentPath} [${index + 1}]`), escapeMarkdown(destination))
           .blankLine();
       }
     } else if (Array.isArray(current)) {

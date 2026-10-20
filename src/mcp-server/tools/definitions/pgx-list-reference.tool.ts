@@ -4,6 +4,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import {
+  emptyPageNotice,
   GeneResultSchema,
   GeneSchema,
   getCpicService,
@@ -90,7 +91,13 @@ const staticRows = {
     {
       value: 'guideline selectors',
       meaning:
-        'pgx_get_guideline by=id requires guidelineId; by=gene requires geneSymbol; by=drug requires exactly one drugName or drugId. Omit selectors belonging to other modes.',
+        'pgx_get_guideline by=id requires guidelineId; by=gene requires geneSymbol; by=drug requires exactly one drugName or drugId. Omit other-mode selectors. Default view=summary pages complete guideline records with exact related counts. view=drugs or pairs requires by=id and pages only that collection; follow page.nextOffset. Ambiguous drug names page candidates instead.',
+      sourceUrl: apiUrl,
+    },
+    {
+      value: 'allele and guideline paging',
+      meaning:
+        'limit defaults to 25; positive safe integers above 100 clamp to 100 with a notice. Nonpositive, fractional or unsafe limits fail before fetching. The 24,000-byte complete-result soft budget includes both surfaces and enrichment; rows and nested frequencies remain complete. oversizedRow marks one indivisible exception. Follow page.nextOffset, not offset plus limit.',
       sourceUrl: apiUrl,
     },
     {
@@ -102,7 +109,7 @@ const staticRows = {
     {
       value: 'recommendation selectors',
       meaning:
-        'pgx_get_recommendations mode=drug requires exactly one drugName or drugId; result filters are one phenotype/activityScore with geneSymbol, or a geneResults map. mode=genotype requires 1–10 explicit gene/diplotype entries and optionally one drug selector. Omit fields belonging to other modes.',
+        'pgx_get_recommendations mode=drug requires one drugName or drugId; result filters are phenotype/activityScore with geneSymbol, or geneResults. mode=genotype requires 1–10 explicit gene/diplotype entries. mode=results requires geneResults or geneSymbol with phenotype/activityScore. Genotype/results optionally accept one drug selector. Follow page.nextOffset and incompletePage.nextOffset independently. Omit fields belonging to other modes.',
       sourceUrl: apiUrl,
     },
     {
@@ -208,7 +215,10 @@ export const pgxListReference = tool('pgx_list_reference', {
         notices: result.items.length
           ? []
           : [
-              'No reference rows matched. Call pgx_list_reference with topic genes without a gene filter to inspect available coverage.',
+              emptyPageNotice(
+                result.page,
+                'No reference rows matched. Call pgx_list_reference with topic genes without a gene filter to inspect available coverage.',
+              ),
             ],
         truncated: result.page.nextOffset !== null,
         shown: result.items.length,

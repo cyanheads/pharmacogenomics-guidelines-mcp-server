@@ -16,8 +16,14 @@ const attribution = {
     .array(
       z
         .object({
-          path: z.string().describe('Source row location.'),
-          requestUrl: z.string().describe('Request producing this row.'),
+          path: z
+            .string()
+            .describe('RFC 6901 JSON Pointer to the returned version-bearing record.'),
+          requestIndex: z
+            .number()
+            .int()
+            .min(0)
+            .describe('Index in requestUrls of the source request.'),
           version: z.number().describe('Source row version.'),
         })
         .describe('Version of one retrieved source record.'),

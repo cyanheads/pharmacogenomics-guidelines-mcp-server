@@ -4,28 +4,25 @@
  */
 import { z } from '@cyanheads/mcp-ts-core';
 
-const text = z
-  .string()
-  .nullable()
-  .optional()
-  .describe('Original source text, null, or omitted when unavailable.');
+const text = z.string().nullable().optional().describe('Source text; nullable or absent.');
 const integer = z
   .number()
   .int()
+  .meta({ minimum: undefined, maximum: undefined })
   .nullable()
   .optional()
-  .describe('Source integer, null, or omitted when unavailable.');
-const flag = z
-  .boolean()
-  .nullable()
-  .optional()
-  .describe('Source boolean flag, null, or omitted when unavailable.');
+  .describe('Source integer; nullable or absent.');
+const flag = z.boolean().nullable().optional().describe('Source flag; nullable or absent.');
 const strings = z
   .array(z.string())
   .nullable()
   .optional()
-  .describe('Source text values in original order, null, or omitted.');
-const id = z.number().int().describe('Source record identifier.');
+  .describe('Source text list in original order; nullable or absent.');
+const id = z
+  .number()
+  .int()
+  .meta({ minimum: undefined, maximum: undefined })
+  .describe('Source record identifier.');
 const symbol = z.string().describe('Source HGNC gene symbol.');
 const name = z.string().describe('Original source name.');
 const fraction = z
@@ -39,7 +36,10 @@ export const GeneValueMapSchema = z
   .describe('Source gene symbols mapped to exact source strings.');
 /** Source gene-to-allele-count maps used directly by the lookup RPC. */
 export const DiplotypeKeySchema = z
-  .record(z.string(), z.record(z.string(), z.number().int()))
+  .record(
+    z.string(),
+    z.record(z.string(), z.number().int().meta({ minimum: undefined, maximum: undefined })),
+  )
   .describe('Source gene symbols mapped to allele names and copy counts.');
 const values = GeneValueMapSchema.nullable()
   .optional()
@@ -86,11 +86,17 @@ export const PairSchema = z
     genesymbol: text,
     guidelinename: text,
     guidelineurl: text,
-    cpiclevel: text,
-    clinpgxlevel: text,
-    pgxtesting: text,
+    cpiclevel: text.describe(
+      'CPIC-assigned pair evaluation level; not a prescribing recommendation.',
+    ),
+    clinpgxlevel: text.describe('Top ClinPGx Summary Annotation level for this pair.'),
+    pgxtesting: text.describe(
+      'ClinPGx label-annotation testing level; distinct from CPIC evaluation.',
+    ),
     pmids: strings,
-    usedforrecommendation: text,
+    usedforrecommendation: text.describe(
+      'Source pair recommendation-use label (Yes, No, or n/a); not prescribing advice.',
+    ),
     provisional: flag,
   })
   .describe('Evaluated gene–drug pair.');
@@ -108,7 +114,7 @@ export const GeneSchema = z
     ensemblid: text,
     clinpgxid: text,
     frequencymethods: text,
-    lookupmethod: text,
+    lookupmethod: text.describe('Gene lookup method: PHENOTYPE, ACTIVITY_SCORE, or ALLELE_STATUS.'),
     version: integer,
     notesondiplotype: text,
     url: text,
@@ -123,9 +129,13 @@ export const GeneResultSchema = z
   .looseObject({
     id,
     genesymbol: symbol,
-    result: z.string().describe('Exact source gene result.'),
-    activityscore: text,
-    ehrpriority: text,
+    result: z
+      .string()
+      .describe('Exact gene phenotype or allele-status result; Indeterminate remains explicit.'),
+    activityscore: text.describe(
+      'Optional source activity-score string; n/a and numeric strings remain distinct.',
+    ),
+    ehrpriority: text.describe('Source EHR Priority Result; not an inferred risk score.'),
     consultationtext: text,
     version: integer,
     frequency: frequencies,
@@ -138,27 +148,39 @@ export const DiplotypeSchema = z
     diplotype: z.string().describe('Exact source diplotype or allele-status notation.'),
     function1: text,
     function2: text,
-    activityvalue1: text,
-    activityvalue2: text,
-    totalactivityscore: text,
+    activityvalue1: text.describe('Source activity assignment for allele slot 1.'),
+    activityvalue2: text.describe('Source activity assignment for allele slot 2.'),
+    totalactivityscore: text.describe(
+      'Source total diplotype activity-score string; never inferred from missing slots.',
+    ),
     description: text,
     diplotypekey: DiplotypeKeySchema.nullable()
       .optional()
       .describe('Original source allele-count key, null, or omitted.'),
-    generesult: text,
-    ehrpriority: text,
+    generesult: text.describe(
+      'Gene phenotype or allele-status result according to the gene lookup method.',
+    ),
+    ehrpriority: text.describe('Source EHR Priority Result; not an inferred risk score.'),
     consultationtext: text,
-    lookupkey: values,
+    lookupkey: values.describe(
+      'Normalized source gene result key for recommendation or test-alert lookup.',
+    ),
   })
   .describe('Source diplotype result and lookup keys.');
 const recommendationFields = {
-  lookupkey: values,
+  lookupkey: values.describe(
+    'Gene-to-required-key map: phenotype, activity score, or allele status according to gene lookup method.',
+  ),
   implications: values,
   drugrecommendation: text,
-  classification: text,
-  phenotypes: values,
-  activityscore: values,
-  population: text,
+  classification: text.describe(
+    'Source recommendation classification, as defined by its guideline supplement.',
+  ),
+  phenotypes: values.describe('Gene-to-phenotype map to which this recommendation applies.'),
+  activityscore: values.describe(
+    'Gene-to-activity-score string map to which this recommendation applies.',
+  ),
+  population: text.describe('Population to which the source recommendation applies.'),
   comments: text,
 };
 /** Full base recommendation plus verified guideline/drug embeds. */
@@ -168,7 +190,9 @@ export const RecommendationSchema = z
     guidelineid: integer,
     drugid: text,
     ...recommendationFields,
-    allelestatus: values,
+    allelestatus: values.describe(
+      'Gene-to-allele-presence status map, mainly HLA; missing is never negative.',
+    ),
     version: integer,
     dosinginformation: flag,
     alternatedrugavailable: flag,
@@ -212,7 +236,9 @@ export const AlleleSchema = z
     functionalstatus: text,
     clinicalfunctionalstatus: text,
     clinicalfunctionalsubstrate: text,
-    activityvalue: text,
+    activityvalue: text.describe(
+      'Source allele activity-score descriptor; distinct from total diplotype activity score.',
+    ),
     citations: strings,
     strength: text,
     functioncomments: text,

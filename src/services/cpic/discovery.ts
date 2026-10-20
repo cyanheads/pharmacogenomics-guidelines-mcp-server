@@ -3,10 +3,10 @@
  * @module services/cpic/discovery
  */
 import { serializationError } from '@cyanheads/mcp-ts-core/errors';
-import type { CpicWorkflow } from './cpic-service.js';
+import type { CpicPageInfo, CpicWorkflow } from './cpic-service.js';
 import { clinicalCaveat } from './provenance.js';
 import type { CpicFilter } from './query.js';
-import type { Drug } from './records.js';
+import type { Drug, Pair } from './records.js';
 
 /** Exact name or ID selector, reusable by recommendation workflows. */
 export interface DrugSelector {
@@ -90,7 +90,7 @@ export async function searchPairs(workflow: CpicWorkflow, input: PairSearch) {
     const drug = pair.drugid ? byId.get(pair.drugid) : undefined;
     if (pair.drugid && !drug)
       throw serializationError('CPIC pair refers to a missing drug record.', { retryable: false });
-    return { ...pair, drug: drug ?? null };
+    return workflow.join(pair, { drug: drug ?? null });
   });
   return { items, page: result.page, provenance: workflow.provenance() };
 }
@@ -100,15 +100,33 @@ export type GuidelineSelector =
   | { by: 'id'; guidelineId: number }
   | { by: 'gene'; geneSymbol: string }
   | ({ by: 'drug' } & DrugSelector);
-/** Resolve all matching guidelines and join complete related records by source IDs/URLs. */
-export async function getGuideline(workflow: CpicWorkflow, input: GuidelineSelector) {
+/** Page guideline descriptors and one selected related collection by exact source IDs/URLs. */
+export async function getGuideline(
+  workflow: CpicWorkflow,
+  input: GuidelineSelector,
+  paging: { view: 'summary' | 'drugs' | 'pairs'; limit: number; offset: number },
+) {
+  const empty = {
+    page: { limit: paging.limit, offset: paging.offset, returned: 0, total: 0, nextOffset: null },
+    ...(paging.view === 'drugs' && { drugs: [] }),
+    ...(paging.view === 'pairs' && { pairs: [] }),
+  };
   const candidates = input.by === 'drug' ? await resolveDrug(workflow, input) : [];
   const guidance = 'Call pgx_search_pairs to find a gene or drug and its guideline coverage.';
   if (input.by === 'drug' && candidates.length !== 1)
     return {
       found: false,
+      ...empty,
       guidelines: [],
-      candidates,
+      candidates: candidates.slice(paging.offset, paging.offset + paging.limit),
+      page: {
+        limit: paging.limit,
+        offset: paging.offset,
+        returned: Math.min(paging.limit, Math.max(0, candidates.length - paging.offset)),
+        total: candidates.length,
+        nextOffset:
+          paging.offset + paging.limit < candidates.length ? paging.offset + paging.limit : null,
+      },
       guidance:
         candidates.length > 1 ? 'Retry pgx_get_guideline with one candidate drugId.' : guidance,
       clinicalCaveat,
@@ -129,34 +147,63 @@ export async function getGuideline(workflow: CpicWorkflow, input: GuidelineSelec
   if (input.by === 'drug' && candidates[0]?.guidelineid == null)
     return {
       found: false,
+      ...empty,
       guidelines: [],
       candidates: [],
       guidance,
       clinicalCaveat,
       provenance: workflow.provenance(),
     };
-  const records = await workflow.scan('guideline', { filters }, 100);
-  const ids = records.map((r) => r.id),
-    urls = records.flatMap((r) => (r.url ? [r.url] : []));
-  const drugs = ids.length
-    ? await workflow.scan('drug', {
-        filters: [{ column: 'guidelineid', operator: 'in', value: ids }],
-      })
-    : [];
-  const pairs = urls.length
-    ? await workflow.scan('pair_view', {
-        filters: [{ column: 'guidelineurl', operator: 'in', value: urls }],
-      })
-    : [];
+  const source = await workflow.page('guideline', {
+    filters,
+    limit: paging.view === 'summary' ? paging.limit : 1,
+    offset: paging.view === 'summary' ? paging.offset : 0,
+  });
+  const descriptors = [];
+  let related: { drugs?: Drug[]; pairs?: Pair[] } = {};
+  let page: CpicPageInfo = paging.view === 'summary' ? source.page : empty.page;
+  for (const record of source.items) {
+    const drugQuery = {
+      filters: [{ column: 'guidelineid', operator: 'eq' as const, value: record.id }],
+    };
+    const pairQuery = {
+      filters: [{ column: 'guidelineurl', operator: 'eq' as const, value: record.url ?? '' }],
+    };
+    const drugPage =
+      paging.view === 'drugs'
+        ? await workflow.page('drug', { ...drugQuery, limit: paging.limit, offset: paging.offset })
+        : undefined;
+    const pairPage =
+      paging.view === 'pairs' && record.url != null
+        ? await workflow.page('pair_view', {
+            ...pairQuery,
+            limit: paging.limit,
+            offset: paging.offset,
+          })
+        : undefined;
+    const drugCount = drugPage?.page.total ?? (await workflow.count('drug', drugQuery));
+    const pairCount =
+      record.url == null
+        ? 0
+        : (pairPage?.page.total ?? (await workflow.count('pair_view', pairQuery)));
+    descriptors.push({ record, drugCount, pairCount });
+    if (paging.view === 'drugs') {
+      related = { drugs: drugPage?.items ?? [] };
+      page = drugPage?.page ?? empty.page;
+    }
+    if (paging.view === 'pairs') {
+      related = { pairs: pairPage?.items ?? [] };
+      page = pairPage?.page ?? empty.page;
+    }
+  }
   return {
-    found: records.length > 0,
-    guidelines: records.map((record) => ({
-      record,
-      drugs: drugs.filter((d) => d.guidelineid === record.id),
-      pairs: pairs.filter((p) => record.url != null && p.guidelineurl === record.url),
-    })),
+    found: source.items.length > 0 || (paging.view === 'summary' && (source.page.total ?? 0) > 0),
+    guidelines: descriptors,
+    ...empty,
+    ...related,
+    page,
     candidates: [],
-    guidance: records.length ? '' : guidance,
+    guidance: source.items.length || (source.page.total ?? 0) > 0 ? '' : guidance,
     clinicalCaveat,
     provenance: workflow.provenance(),
   };

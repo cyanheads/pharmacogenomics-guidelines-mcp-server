@@ -2,9 +2,12 @@
  * @fileoverview Bounded source diplotype resolution and allele evidence joins.
  * @module services/cpic/evidence
  */
-import type { CpicWorkflow } from './cpic-service.js';
-import type { CpicFilter } from './query.js';
-import type { Diplotype } from './records.js';
+import type { CpicPageInfo, CpicWorkflow } from './cpic-service.js';
+import { buildCpicUrl, type CpicFilter } from './query.js';
+import type { Allele, Diplotype } from './records.js';
+
+const frequencyScanCap = 2000;
+const frequencyPageSize = 100;
 
 /** Resolve only source-supported notation; keep every matching source row. */
 export async function resolveDiplotype(
@@ -78,23 +81,107 @@ export interface AlleleSearch {
 }
 
 /** Join a source allele page to complete bounded population-frequency evidence. */
-export async function searchAlleles(workflow: CpicWorkflow, input: AlleleSearch) {
+export async function searchAlleles(
+  workflow: CpicWorkflow,
+  input: AlleleSearch,
+  select: (
+    rows: Allele[],
+    page: CpicPageInfo,
+    frequencyUrls: (count: number) => string[],
+  ) => number,
+) {
   const filters: CpicFilter[] = [{ column: 'genesymbol', operator: 'eq', value: input.geneSymbol }];
   if (input.name !== undefined) filters.push({ column: 'name', operator: 'eq', value: input.name });
   if (input.clinicalFunctionalStatus !== undefined)
     filters.push({
       column: 'clinicalfunctionalstatus',
-      operator: 'eq',
+      operator: 'iexact',
       value: input.clinicalFunctionalStatus,
     });
-  const result = await workflow.page('allele', {
+  let effectiveName = input.name;
+  let result = await workflow.page('allele', {
     filters,
     limit: input.limit,
     offset: input.offset,
   });
+  if (input.name !== undefined && result.items.length === 0) {
+    const suffix = input.name.toUpperCase().startsWith(input.geneSymbol.toUpperCase())
+      ? input.name.slice(input.geneSymbol.length).trimStart()
+      : '';
+    if (suffix.startsWith('*')) {
+      const exactExists =
+        result.page.total !== null
+          ? result.page.total > 0
+          : input.offset > 0 &&
+            (await workflow.page('allele', { filters, limit: 1 })).items.length > 0;
+      if (!exactExists) {
+        effectiveName = suffix;
+        result = await workflow.page('allele', {
+          filters: filters.map((filter) =>
+            filter.column === 'name'
+              ? { column: 'name', operator: 'eq' as const, value: suffix }
+              : filter,
+          ),
+          limit: input.limit,
+          offset: input.offset,
+        });
+      }
+    }
+  }
+  // The initial reserve covers the count probe and at least one evidence request.
+  let reservedPages = 2;
+  const frequencyQuery = (count: number): { filters: CpicFilter[] } => ({
+    filters: [
+      { column: 'genesymbol', operator: 'eq', value: input.geneSymbol },
+      {
+        column: 'name',
+        operator: 'in',
+        value: [...new Set(result.items.slice(0, count).map((row) => row.name))],
+      },
+    ],
+  });
+  const frequencyUrls = (count: number) => {
+    const names = [...new Set(result.items.slice(0, count).map((row) => row.name))];
+    if (!names.length) return [];
+    return Array.from({ length: reservedPages }, (_, index) =>
+      buildCpicUrl('population_frequency_view', {
+        ...frequencyQuery(count),
+        limit: frequencyPageSize + 1,
+        offset: index * frequencyPageSize,
+      }),
+    );
+  };
+  let count = select(result.items, result.page, frequencyUrls);
+  if (count > 1) {
+    const probe = await workflow.page('population_frequency_view', {
+      ...frequencyQuery(count),
+      limit: 1,
+    });
+    // An exact count bounds every narrower prefix; unknown totals retain the scan's full bound.
+    reservedPages =
+      probe.page.total === null
+        ? probe.items.length
+          ? frequencyScanCap / frequencyPageSize
+          : 0
+        : Math.min(
+            frequencyScanCap / frequencyPageSize,
+            Math.ceil(probe.page.total / frequencyPageSize),
+          );
+    count = select(result.items.slice(0, count), result.page, frequencyUrls);
+  }
+  const budgetTrimmed = count < result.items.length;
+  result = {
+    ...result,
+    items: result.items.slice(0, count),
+    page: {
+      ...result.page,
+      returned: count,
+      nextOffset: budgetTrimmed ? result.page.offset + count : result.page.nextOffset,
+    },
+  };
   const names = [...new Set(result.items.map((row) => row.name))];
   const frequencies =
-    names.length === 0
+    names.length === 0 || reservedPages === 0
       ? []
       : await workflow.scan(
           'population_frequency_view',
@@ -104,15 +191,18 @@ export async function searchAlleles(workflow: CpicWorkflow, input: AlleleSearch)
               { column: 'name', operator: 'in', value: names },
             ],
           },
-          2000,
+          frequencyScanCap,
         );
   return {
-    items: result.items.map((row) => ({
-      ...row,
-      populationFrequencies: frequencies.filter(
-        (frequency) => frequency.genesymbol === row.genesymbol && frequency.name === row.name,
-      ),
-    })),
+    effectiveName,
+    budgetTrimmed,
+    items: result.items.map((row) =>
+      workflow.join(row, {
+        populationFrequencies: frequencies.filter(
+          (frequency) => frequency.genesymbol === row.genesymbol && frequency.name === row.name,
+        ),
+      }),
+    ),
     page: result.page,
     provenance: workflow.provenance(),
   };

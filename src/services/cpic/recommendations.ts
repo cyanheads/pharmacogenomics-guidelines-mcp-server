@@ -2,13 +2,19 @@
  * @fileoverview Source-only recommendation matching with bounded completeness checks.
  * @module services/cpic/recommendations
  */
-import { serializationError, validationError } from '@cyanheads/mcp-ts-core/errors';
-import type { CpicWorkflow } from './cpic-service.js';
+import {
+  JsonRpcErrorCode,
+  McpError,
+  serializationError,
+  validationError,
+} from '@cyanheads/mcp-ts-core/errors';
+import { type CpicWorkflow, queryTooBroad } from './cpic-service.js';
 import { type DrugSelector, resolveDrug } from './discovery.js';
 import { resolveDiplotype } from './evidence.js';
+import { emptyPageNotice } from './notices.js';
 import { clinicalCaveat } from './provenance.js';
 import type { CpicFilter } from './query.js';
-import type { DiplotypeKey, Recommendation } from './records.js';
+import type { DiplotypeKey, Drug, Recommendation } from './records.js';
 
 /** An explicitly supplied gene result, never inferred from another result kind. */
 export type ExplicitGeneResult = {
@@ -21,13 +27,15 @@ export interface RecommendationQuery extends DrugSelector {
   geneResults?: Record<string, ExplicitGeneResult>;
   geneSymbol?: string;
   genotype?: Record<string, string>;
+  incompleteLimit: number;
+  incompleteOffset: number;
   limit: number;
-  mode: 'drug' | 'genotype';
+  mode: 'drug' | 'genotype' | 'results';
   offset: number;
   phenotype?: string;
   population?: string;
 }
-type Resolution = Awaited<ReturnType<typeof resolveDiplotype>>;
+type Resolution = Omit<Awaited<ReturnType<typeof resolveDiplotype>>, 'provenance'>;
 type IncompleteMatch = { recommendationId: number; drugId: string | null; missingGenes: string[] };
 const noMatch =
   'No recommendations matched. Call pgx_search_pairs to check guideline coverage or pgx_list_reference with topic phenotypes for the supplied gene.';
@@ -35,6 +43,25 @@ const incompleteNotice =
   'Recommendations require additional gene results. Supply the listed missingGenes to pgx_get_recommendations; omitted genes are not assumed normal.';
 const exploratoryNotice =
   'Exploratory source recommendations: no genotype or phenotype match has been established.';
+
+async function noTableNotice(workflow: CpicWorkflow, drug: Drug): Promise<string> {
+  const fallback =
+    'This CPIC drug has no tabulated recommendation rows. Call pgx_get_guideline by drug to inspect source guideline coverage.';
+  if (drug.guidelineid == null) return fallback;
+  try {
+    const result = await workflow.page('guideline', {
+      filters: [{ column: 'id', operator: 'eq', value: drug.guidelineid }],
+      limit: 1,
+    });
+    const guideline = result.items[0];
+    return guideline
+      ? `This CPIC drug has no tabulated recommendation rows. Consult guideline ${guideline.name}${guideline.url ? `: ${guideline.url}` : ' with pgx_get_guideline by id'}.`
+      : fallback;
+  } catch (error) {
+    if (error instanceof McpError && error.code === JsonRpcErrorCode.RequestCancelled) throw error;
+    return `${fallback} Guideline details could not be retrieved during this call.`;
+  }
+}
 
 function decimal(value: string): string | null {
   if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(value)) return null;
@@ -70,7 +97,7 @@ function requireRelations(row: Recommendation): void {
       retryable: false,
     });
 }
-function pageRows<T>(rows: T[], input: RecommendationQuery) {
+function pageRows<T>(rows: T[], input: { limit: number; offset: number }) {
   const items = rows.slice(input.offset, input.offset + input.limit);
   const next = input.offset + items.length;
   return {
@@ -85,9 +112,14 @@ function pageRows<T>(rows: T[], input: RecommendationQuery) {
   };
 }
 
-async function resolveResults(workflow: CpicWorkflow, inputs: Record<string, ExplicitGeneResult>) {
+async function resolveResults(
+  workflow: CpicWorkflow,
+  inputs: Record<string, ExplicitGeneResult>,
+  field?: 'phenotype' | 'activityScore',
+) {
   const resolved: Record<string, ExplicitGeneResult> = {};
-  for (const [gene, input] of Object.entries(inputs)) {
+  const candidates: { gene: string; column: string; values: string[] }[] = [];
+  for (const [index, [gene, input]] of Object.entries(inputs).entries()) {
     const references = await workflow.scan('gene_result', {
       filters: [{ column: 'genesymbol', operator: 'eq', value: gene }],
     });
@@ -118,14 +150,49 @@ async function resolveResults(workflow: CpicWorkflow, inputs: Record<string, Exp
         matches.every((value) => equalScore(value, supplied))
       )
     )
-      throw validationError('The gene result is unsupported or ambiguous in CPIC source values.', {
-        reason: 'unsupported_gene_result',
-        geneSymbol: gene,
-        retryable: false,
-      });
+      throw validationError(
+        `Unsupported or ambiguous source result in ${field ?? `geneResults entry ${index + 1} (${input.kind})`}.`,
+        {
+          reason: 'unsupported_gene_result',
+          field: field ?? 'geneResults',
+          ...(field === undefined && { entry: index + 1 }),
+          kind: input.kind,
+          retryable: false,
+        },
+      );
     resolved[gene] = { kind: input.kind, value: selected ?? supplied };
+    candidates.push({
+      gene,
+      column:
+        input.kind === 'phenotype'
+          ? 'phenotypes'
+          : input.kind === 'activityScore'
+            ? 'activityscore'
+            : 'lookupkey',
+      values: input.kind === 'activityScore' ? matches : [selected ?? supplied],
+    });
   }
-  return resolved;
+  return { resolved, candidates };
+}
+
+async function collectCandidates(
+  workflow: CpicWorkflow,
+  filters: CpicFilter[],
+  candidates: { gene: string; column: string; values: string[] }[],
+  byId = new Map<number, Recommendation>(),
+) {
+  for (const { gene, column, values } of candidates) {
+    for (const value of values) {
+      const rows = await workflow.scan('recommendation', {
+        filters: [...filters, { column, operator: 'contains', value: { [gene]: value } }],
+      });
+      for (const row of rows) {
+        byId.set(row.id, row);
+        if (byId.size > 2000) throw queryTooBroad(2000);
+      }
+    }
+  }
+  return [...byId.values()].sort((left, right) => left.id - right.id);
 }
 function matchesResult(row: Recommendation, gene: string, result: ExplicitGeneResult): boolean {
   if (result.kind === 'phenotype') return row.phenotypes?.[gene] === result.value;
@@ -152,14 +219,43 @@ export async function getRecommendations(workflow: CpicWorkflow, input: Recommen
   const geneResolutions: Resolution[] = [];
   const incompleteMatches: IncompleteMatch[] = [];
   const notices: string[] = [];
+  let populationMiss = false;
+  function selectPopulation(rows: Recommendation[]) {
+    if (input.population === undefined) return rows;
+    const selected = rows.filter((row) => row.population?.trim() === input.population);
+    if (rows.length && !selected.length) {
+      populationMiss = true;
+      const values = [
+        ...new Set(
+          rows.filter((row) => Object.hasOwn(row, 'population')).map((row) => row.population),
+        ),
+      ];
+      notices.push(
+        `No rows match the supplied population. Available source populations: ${JSON.stringify(values)}.${rows.some((row) => !Object.hasOwn(row, 'population')) ? ' Some source rows omit population.' : ''}`,
+      );
+    }
+    return selected;
+  }
   function finish(
     status: 'exploratory' | 'matched' | 'no_match' | 'incomplete' | 'unresolved',
     rows: Recommendation[],
   ) {
+    const matchedPage = pageRows(rows, input);
+    if (matchedPage.page.total > 0 && !matchedPage.items.length)
+      notices.push(emptyPageNotice(matchedPage.page, noMatch));
+    const incompletePage = pageRows(incompleteMatches, {
+      limit: input.incompleteLimit,
+      offset: input.incompleteOffset,
+    });
+    if (incompletePage.page.total > 0 && !incompletePage.items.length)
+      notices.push(
+        `Incomplete diagnostics: ${emptyPageNotice(incompletePage.page, incompleteNotice)}`,
+      );
     return {
       status,
-      ...pageRows(rows, input),
-      incompleteMatches,
+      ...matchedPage,
+      incompleteMatches: incompletePage.items,
+      incompletePage: incompletePage.page,
       geneResolutions,
       clinicalCaveat,
       provenance: workflow.provenance(),
@@ -175,7 +271,9 @@ export async function getRecommendations(workflow: CpicWorkflow, input: Recommen
       retryable: false,
     });
   if (hasDrug && drugs.length === 0) {
-    notices.push(noMatch);
+    notices.push(
+      'No exact CPIC drug resolved. Call pgx_search_pairs with a drugName substring to discover source names and identifiers.',
+    );
     return finish('no_match', []);
   }
   const drug = drugs[0];
@@ -199,12 +297,21 @@ export async function getRecommendations(workflow: CpicWorkflow, input: Recommen
     });
     result.items.forEach(requireRelations);
     notices.push(exploratoryNotice);
-    if (result.items.length === 0) notices.push(noMatch);
+    if (result.items.length === 0)
+      notices.push(
+        result.page.total === 0 && drug
+          ? await noTableNotice(workflow, drug)
+          : emptyPageNotice(result.page, noMatch),
+      );
     return {
       status: 'exploratory' as const,
       items: result.items,
       page: result.page,
       incompleteMatches,
+      incompletePage: pageRows(incompleteMatches, {
+        limit: input.incompleteLimit,
+        offset: input.incompleteOffset,
+      }).page,
       geneResolutions,
       clinicalCaveat,
       provenance: workflow.provenance(),
@@ -221,7 +328,9 @@ export async function getRecommendations(workflow: CpicWorkflow, input: Recommen
           .slice(start, start + 3)
           .map(([gene, diplotype]) => resolveDiplotype(workflow, gene, diplotype)),
       );
-      geneResolutions.push(...batch);
+      geneResolutions.push(
+        ...batch.map(({ provenance: _provenance, ...resolution }) => resolution),
+      );
     }
     if (geneResolutions.some((result) => result.records.length !== 1)) {
       notices.push(
@@ -281,17 +390,32 @@ export async function getRecommendations(workflow: CpicWorkflow, input: Recommen
         });
       return row;
     });
+    rows = await collectCandidates(
+      workflow,
+      filters,
+      Object.entries(genotypeKeys).map(([gene, value]) => ({
+        gene,
+        column: 'lookupkey',
+        values: [value],
+      })),
+      byId,
+    );
     if (drug) rows = rows.filter((row) => row.drugid === drug.drugid);
-  } else rows = await workflow.scan('recommendation', { filters });
+  } else rows = input.mode === 'drug' ? await workflow.scan('recommendation', { filters }) : [];
   rows.forEach(requireRelations);
+  if (drug && rows.length === 0 && input.mode !== 'results') {
+    const tableEmpty =
+      input.mode === 'drug' ||
+      (await workflow.page('recommendation', { filters, limit: 1 })).page.total === 0;
+    if (tableEmpty) notices.push(await noTableNotice(workflow, drug));
+  }
   const availableGenes = [...new Set(rows.flatMap((row) => Object.keys(row.lookupkey ?? {})))];
-  if (input.population !== undefined)
-    rows = rows.filter((row) => row.population?.trim() === input.population);
+  rows = selectPopulation(rows);
   if (input.mode === 'drug' && !hasResult) {
     if (input.geneSymbol)
       rows = rows.filter((row) => Object.hasOwn(row.lookupkey ?? {}, input.geneSymbol as string));
     notices.push(exploratoryNotice);
-    if (rows.length === 0) notices.push(noMatch);
+    if (rows.length === 0 && !populationMiss && notices.length === 1) notices.push(noMatch);
     return finish('exploratory', rows);
   }
   let supplied = input.geneResults ?? {};
@@ -309,19 +433,50 @@ export async function getRecommendations(workflow: CpicWorkflow, input: Recommen
           : { kind: 'activityScore', value: input.activityScore as string },
     };
   }
-  const resolved = input.mode === 'drug' ? await resolveResults(workflow, supplied) : {};
+  const resolution =
+    input.mode !== 'genotype'
+      ? await resolveResults(
+          workflow,
+          supplied,
+          input.phenotype !== undefined
+            ? 'phenotype'
+            : input.activityScore !== undefined
+              ? 'activityScore'
+              : undefined,
+        )
+      : { resolved: {}, candidates: [] };
+  const resolved = resolution.resolved;
+  if (input.mode === 'results') {
+    rows = await collectCandidates(workflow, filters, resolution.candidates);
+    rows.forEach(requireRelations);
+    if (
+      drug &&
+      rows.length === 0 &&
+      (await workflow.page('recommendation', { filters, limit: 1 })).page.total === 0
+    )
+      notices.push(await noTableNotice(workflow, drug));
+    rows = selectPopulation(rows);
+  }
   const resolvedEntries = Object.entries(resolved);
   const matched: Recommendation[] = [];
   for (const row of rows) {
     const keys = Object.entries(row.lookupkey ?? {});
     if (
-      input.mode === 'drug' &&
-      !resolvedEntries.every(([gene, result]) => matchesResult(row, gene, result))
+      input.mode !== 'genotype' &&
+      (input.mode === 'results'
+        ? !keys.some(([gene]) => resolved[gene] !== undefined) ||
+          !resolvedEntries
+            .filter(([gene]) => Object.hasOwn(row.lookupkey ?? {}, gene))
+            .every(([gene, result]) => matchesResult(row, gene, result))
+        : !resolvedEntries.every(([gene, result]) => matchesResult(row, gene, result)))
     )
       continue;
     if (
       input.mode === 'genotype' &&
-      keys.some(([gene, value]) => genotypeKeys[gene] !== undefined && genotypeKeys[gene] !== value)
+      (!keys.some(([gene]) => genotypeKeys[gene] !== undefined) ||
+        keys.some(
+          ([gene, value]) => genotypeKeys[gene] !== undefined && genotypeKeys[gene] !== value,
+        ))
     )
       continue;
     const missingGenes = keys
@@ -340,7 +495,7 @@ export async function getRecommendations(workflow: CpicWorkflow, input: Recommen
     matched.push(row);
   }
   if (incompleteMatches.length) notices.push(incompleteNotice);
-  if (!matched.length && !incompleteMatches.length) notices.push(noMatch);
+  if (!matched.length && !incompleteMatches.length && !notices.length) notices.push(noMatch);
   return finish(
     matched.length ? 'matched' : incompleteMatches.length ? 'incomplete' : 'no_match',
     matched,

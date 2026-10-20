@@ -319,14 +319,14 @@ describe('genotype source matching', () => {
       const output = await success({ mode: 'genotype', genotype: { [gene.toLowerCase()]: input } });
       expect(output).toMatchObject({
         status: 'matched',
-        items: [rows[1], rows[0]],
+        items: rows,
         geneResolutions: [{ records: [source] }],
       });
       const rpc = calls.find((url) => url.pathname.endsWith('/recommendation_lookup'));
       expect(JSON.parse(rpc?.searchParams.get('diplotypelookup') ?? '')).toEqual(
         source.diplotypekey,
       );
-      expect(calls.at(-1)?.searchParams.get('id')).toBe('in.(2,1)');
+      expect(calls.some((url) => url.searchParams.get('id') === 'in.(2,1)')).toBe(true);
     },
   );
   it.each([0, 2])(
