@@ -1,5 +1,5 @@
 <div align="center">
-  <h1>pharmacogenomics-guidelines-mcp-server</h1>
+  <h1>@cyanheads/pharmacogenomics-guidelines-mcp-server</h1>
   <p><b>Find pharmacogenomics guidelines, translate diplotypes, and retrieve prescribing recommendations via MCP. STDIO or Streamable HTTP.</b>
   <div>6 Tools</div>
   </p>
