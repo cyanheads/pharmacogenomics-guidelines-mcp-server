@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "pharmacogenomics-guidelines-mcp-server",
+  "version": "0.1.0",
+  "description": "Find pharmacogenomics guidelines, translate diplotypes, and retrieve prescribing recommendations via MCP. STDIO or Streamable HTTP.",
+  "author": {
+    "name": "Casey Hand",
+    "email": "casey@caseyjhand.com",
+    "url": "https://caseyjhand.com"
+  },
+  "homepage": "https://github.com/cyanheads/pharmacogenomics-guidelines-mcp-server#readme",
+  "repository": "https://github.com/cyanheads/pharmacogenomics-guidelines-mcp-server",
+  "license": "Apache-2.0",
+  "keywords": ["mcp", "mcp-server", "model-context-protocol", "ai-agents", "ai-tools", "typescript", "cyanheads", "pharmacogenomics", "pharmacogenetics", "diplotypes", "prescribing-guidelines"],
+  "mcpServers": {
+    "pharmacogenomics-guidelines-mcp-server": {
+      "command": "npx",
+      "args": ["-y", "@cyanheads/pharmacogenomics-guidelines-mcp-server"],
+      "env": {
+        "MCP_TRANSPORT_TYPE": "stdio"
+      }
+    }
+  }
+}
