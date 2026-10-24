@@ -1,6 +1,6 @@
 # pharmacogenomics-guidelines-mcp-server - Directory Structure
 
-Generated on: 2026-10-20 07:47:41
+Generated on: 2026-10-24 21:28:55
 
 ```text
 pharmacogenomics-guidelines-mcp-server/
@@ -187,8 +187,10 @@ pharmacogenomics-guidelines-mcp-server/
 │       │   ├── partial-candidates.test.ts
 │       │   ├── recommendations-contract.test.ts
 │       │   ├── results-mode.test.ts
-│       │   └── safe-errors.test.ts
+│       │   ├── safe-errors.test.ts
+│       │   └── test-alerts.test.ts
 │       └── tool-shared/
+│           ├── identifier-cost.test.ts
 │           ├── lossless-renderer.test.ts
 │           ├── notices.test.ts
 │           ├── response-budget.test.ts
