@@ -5,10 +5,6 @@
 
 import { markdown } from '@cyanheads/mcp-ts-core/utils';
 
-function escapeMarkdown(value: string): string {
-  return value.replace(/[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/g, '\\$&');
-}
-
 function embeddedUrl(candidate: string): string {
   let url = candidate.replace(/[.,;:!?]+$/, '');
   const brackets: Record<string, string> = { ')': '(', ']': '[', '}': '{' };
@@ -39,7 +35,7 @@ export function renderLossless(value: unknown, path = '$'): string {
         linked.add(destination);
         result
           .blankLine()
-          .link(escapeMarkdown(`${currentPath} [${index + 1}]`), escapeMarkdown(destination))
+          .link(`${currentPath} [${index + 1}]`, destination)
           .blankLine();
       }
     } else if (Array.isArray(current)) {
