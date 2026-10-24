@@ -32,16 +32,20 @@ export const drugIdSchema = optionalTextSchema(
 /** RxNorm identifier with an optional source prefix and outer whitespace. */
 export const rxnormIdSchema = z
   .string()
-  .regex(/^(?:\s*|\s*(?:RxNorm:)?\d+\s*)$/i)
+  .regex(/^(?:\s*|\s*(?:[Rr][Xx][Nn][Oo][Rr][Mm]:)?\d+\s*)$/)
   .optional()
-  .describe('Decimal RxNorm ID, optionally prefixed RxNorm:; blank means unset.');
+  .describe(
+    'Decimal RxNorm ID, optionally prefixed RxNorm: in any casing; outer whitespace is ignored and blank means unset.',
+  );
 
 /** Exact ATC membership identifier, not a hierarchy query. */
 export const atcIdSchema = z
   .string()
-  .regex(/^(?:\s*|\s*(?:ATC:)?[a-z\d]{1,7}\s*)$/i)
+  .regex(/^(?:\s*|\s*(?:[Aa][Tt][Cc]:)?[A-Za-z\d]{1,7}\s*)$/)
   .optional()
-  .describe('Exact ATC code (1–7 letters/digits), optionally prefixed ATC:; blank means unset.');
+  .describe(
+    'Exact ATC code (1–7 letters/digits) in any casing, optionally prefixed ATC: in any casing; outer whitespace is ignored and blank means unset.',
+  );
 
 /** Shared public list inputs; the caller owns the flat root object. */
 export const paginationFields = {
@@ -49,9 +53,11 @@ export const paginationFields = {
     .number()
     .int()
     .min(1)
-    .max(100)
+    .max(Number.MAX_SAFE_INTEGER)
     .default(25)
-    .describe('Maximum rows to return (1–100; default 25).'),
+    .describe(
+      'Positive safe-integer row limit; values above 100 are clamped to 100 with a notice (default 25).',
+    ),
   offset: z
     .number()
     .int()
@@ -68,24 +74,15 @@ export const recommendationPaginationFields = {
     .number()
     .int()
     .min(1)
-    .max(50)
+    .max(Number.MAX_SAFE_INTEGER)
     .default(10)
-    .describe('Maximum recommendations to return (1–50; default 10).'),
+    .describe(
+      'Positive safe-integer recommendation limit; values above 50 are clamped to 50 with a notice (default 10).',
+    ),
 };
 
 /** Allele and guideline callers may request any safe positive limit; handlers clamp to 100. */
-export const budgetPaginationFields = {
-  ...paginationFields,
-  limit: z
-    .number()
-    .int()
-    .min(1)
-    .max(Number.MAX_SAFE_INTEGER)
-    .default(25)
-    .describe(
-      'Positive safe-integer row limit; values above 100 are clamped to 100 with a notice (default 25).',
-    ),
-};
+export const budgetPaginationFields = paginationFields;
 
 /** Public page metadata preserves unknown counts and past-end offsets. */
 export const pageSchema = z

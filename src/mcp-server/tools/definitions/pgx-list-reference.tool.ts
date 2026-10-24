@@ -71,6 +71,12 @@ const staticRows = {
   })),
   input_formats: [
     {
+      value: 'recommendation views',
+      meaning:
+        'pgx_get_recommendations defaults to view=recommendations. view=test_alerts uses the same selectors to retrieve complete source CDS examples directly, without recommendation or guideline joins. alerts and incompleteAlerts use page and incompletePage independently; items and incompleteMatches remain empty. Ordered alerttext, No CDS and n/a are preserved. Missing genetics never become No Result; explicit source No Result rows remain browsable.',
+      sourceUrl: apiUrl,
+    },
+    {
       value: 'geneSymbol',
       meaning:
         'Trim outer whitespace and uppercase the gene symbol; preserve punctuation such as HLA-B.',
@@ -85,7 +91,7 @@ const staticRows = {
     {
       value: 'RxNorm / ATC',
       meaning:
-        'rxnormId accepts digits or RxNorm: followed by digits. atcId accepts an optional ATC: prefix and 1–7 letters/digits; exact ATC membership only, not hierarchy expansion.',
+        'rxnormId accepts digits or RxNorm: followed by digits. atcId accepts an optional ATC: prefix and 1–7 letters/digits; exact ATC membership only, not hierarchy expansion. Prefixes and ATC letters accept any casing; outer whitespace is ignored and blank means unset.',
       sourceUrl: apiUrl,
     },
     {
@@ -101,9 +107,15 @@ const staticRows = {
       sourceUrl: apiUrl,
     },
     {
+      value: 'pair, reference and recommendation paging',
+      meaning:
+        'Positive safe-integer limits clamp with notices to 100 for pairs and live references, 50 for recommendations, and independently 100 for incompleteLimit. Defaults remain 25, 25, 10 and 25 respectively. Nonpositive, fractional and unsafe limits fail before fetching. Static reference topics always return complete vocabulary at effective limit 100 and offset 0. Follow matched and incomplete continuation offsets independently.',
+      sourceUrl: apiUrl,
+    },
+    {
       value: 'source result notation',
       meaning:
-        'Source-supported diplotypes include star alleles, HLA allele-specific positive/negative status and non-star sequence names. Never infer omitted genes or expand unsupported notation.',
+        'Source-supported diplotypes include star alleles, HLA allele-specific positive/negative status and non-star sequence names. Gene lookupmethod determines result kinds: PHENOTYPE permits phenotype; ACTIVITY_SCORE permits phenotype or activityScore; ALLELE_STATUS permits alleleStatus. Inspect genes and phenotypes topics; never infer omitted genes or convert a phenotype to a score.',
       sourceUrl: apiUrl,
     },
     {
@@ -204,7 +216,7 @@ export const pgxListReference = tool('pgx_list_reference', {
       const query = {
         topic: input.topic,
         ...(geneSymbol ? { geneSymbol } : {}),
-        limit: input.limit,
+        limit: Math.min(input.limit, 100),
         offset: input.offset,
       };
       const result = await getCpicService().workflow(ctx, (workflow) =>
@@ -212,17 +224,20 @@ export const pgxListReference = tool('pgx_list_reference', {
       );
       ctx.enrich({
         effectiveQuery: query,
-        notices: result.items.length
-          ? []
-          : [
-              emptyPageNotice(
-                result.page,
-                'No reference rows matched. Call pgx_list_reference with topic genes without a gene filter to inspect available coverage.',
-              ),
-            ],
+        notices: [
+          ...(input.limit > 100 ? ['Requested limit clamped to the 100-row cap.'] : []),
+          ...(result.items.length
+            ? []
+            : [
+                emptyPageNotice(
+                  result.page,
+                  'No reference rows matched. Call pgx_list_reference with topic genes without a gene filter to inspect available coverage.',
+                ),
+              ]),
+        ],
         truncated: result.page.nextOffset !== null,
         shown: result.items.length,
-        cap: input.limit,
+        cap: query.limit,
       });
       return result;
     }

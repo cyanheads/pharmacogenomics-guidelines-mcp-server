@@ -6,7 +6,13 @@ import { runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { Parser } from 'commonmark';
 import { expect, vi } from 'vitest';
 import { getRecommendationsTool } from '@/mcp-server/tools/definitions/get-recommendations.tool.js';
-import type { Diplotype, GeneResult, Guideline, Recommendation } from '@/services/cpic/records.js';
+import type {
+  Diplotype,
+  Gene,
+  GeneResult,
+  Guideline,
+  Recommendation,
+} from '@/services/cpic/records.js';
 
 /** Complete source row with deliberately unnormalized clinical text. */
 export function recommendation(
@@ -77,8 +83,10 @@ export function diplotype(gene = 'CYP2C19', notation = '*1/*2', result = 'Normal
 }
 /** Source datasets accepted by the network fake; unknown endpoints fail loudly. */
 export interface Dataset {
+  alerts?: unknown[];
   diplotypes?: Diplotype[];
   drugs?: unknown[];
+  genes?: Gene[];
   guidelines?: (Guideline | null | undefined)[];
   recommendations?: Recommendation[];
   references?: GeneResult[];
@@ -94,6 +102,24 @@ export function upstream(data: Dataset) {
     const endpoint = url.pathname.slice('/v1/'.length);
     let rows: unknown[];
     switch (endpoint) {
+      case 'test_alert':
+        rows = data.alerts ?? [];
+        expect(url.searchParams.get('select')).toBe('*');
+        break;
+      case 'gene':
+        rows =
+          data.genes ??
+          [...new Set((data.references ?? []).map((row) => row.genesymbol))].map((symbol) => ({
+            symbol,
+            lookupmethod: symbol.startsWith('HLA-')
+              ? 'ALLELE_STATUS'
+              : (data.references ?? []).some(
+                    (row) => row.genesymbol === symbol && row.activityscore != null,
+                  )
+                ? 'ACTIVITY_SCORE'
+                : 'PHENOTYPE',
+          }));
+        break;
       case 'guideline':
         rows = data.guidelines ?? [];
         break;

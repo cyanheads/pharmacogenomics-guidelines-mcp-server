@@ -2,7 +2,7 @@
 
 **Server:** pharmacogenomics-guidelines-mcp-server
 **Version:** 0.2.0
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.15`
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.16`
 **Engines:** Bun ≥1.4.0, Node ≥24.0.0
 **MCP SDK:** `@modelcontextprotocol/server` ^2.3.1
 **Zod:** ^4.6.7
@@ -48,6 +48,7 @@ Exactly six tools are registered in `src/index.ts`; there are no resources, prom
 
 - A pair evaluation, a ClinPGx testing label and a prescribing recommendation are separate evidence.
 - Drug-only browsing stays exploratory. Genetic matches require every source lookup prerequisite; omitted genes are never normal, negative or Indeterminate by default.
+- `pgx_get_recommendations` defaults to recommendations; opt-in `view: "test_alerts"` reads complete source CDS examples directly, without recommendation RPC or guideline joins. Keep ordered alerttext and singular phenotype; missing genetics never become No Result. Alert pages use optional alerts/incompleteAlerts, with required recommendation collections empty.
 - Preserve populations, activity scores, HLA allele identities, non-star notation, source nullability and all recommendation classifications.
 - `content[]` and `structuredContent` carry the same complete data. Use `formatLossless` plus reversible enrichment renderers; never truncate clinical text or escape a link into inert text.
 - Keep exact request URLs and row versions in caller-facing provenance, not logs. Never log genotype maps or source consultation text.

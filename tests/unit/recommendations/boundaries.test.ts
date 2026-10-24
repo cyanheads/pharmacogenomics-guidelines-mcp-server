@@ -66,7 +66,10 @@ describe('recommendation selector boundaries', () => {
   });
   it.each([
     { limit: 0 },
-    { limit: 51 },
+    { limit: Number.MAX_SAFE_INTEGER + 1 },
+    { incompleteLimit: 0 },
+    { incompleteLimit: 1.5 },
+    { incompleteLimit: Number.MAX_SAFE_INTEGER + 1 },
     { offset: -1 },
     { offset: Number.MAX_SAFE_INTEGER + 1 },
     { geneResults: { G: { kind: 'unknown', value: 'Normal' } } },
@@ -130,10 +133,15 @@ describe('recommendation paging', () => {
         geneSymbol: 'CYP2C19',
         phenotype: 'Normal',
         offset,
+        limit: 51,
+        incompleteLimit: 101,
       }),
     ).toMatchObject({
       items: [],
-      page: { total: offset ? 1 : 0, offset, returned: 0, nextOffset: null },
+      page: { total: offset ? 1 : 0, offset, returned: 0, nextOffset: null, limit: 50 },
+      incompletePage: { limit: 100 },
+      effectiveQuery: { limit: 50, incompleteLimit: 100 },
+      cap: 50,
       shown: 0,
       truncated: false,
     });

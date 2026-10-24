@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.2.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/pharmacogenomics-guidelines-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/pharmacogenomics-guidelines-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/pharmacogenomics-guidelines-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.3-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.2.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/pharmacogenomics-guidelines-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/pharmacogenomics-guidelines-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/pharmacogenomics-guidelines-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.4-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -19,11 +19,17 @@
 
 </div>
 
+<div align="center">
+
+**Public Hosted Server:** [https://pharmacogenomics-guidelines.caseyjhand.com/mcp](https://pharmacogenomics-guidelines.caseyjhand.com/mcp)
+
+</div>
+
 ---
 
 ## Overview
 
-Clinical pharmacogenomics evidence from the public [CPIC Database API](https://api.cpicpgx.org/v1/): evaluated gene–drug pairs, guidelines, allele function and frequency, diplotype-to-phenotype translation, and prescribing recommendations, with ClinPGx testing labels and guideline links. You can discover pairs, translate a patient's diplotype, and browse recommendations or match them against explicitly supplied gene results. All six tools are read-only, need no API key, and run as a stdio process or a local Streamable HTTP server.
+Clinical pharmacogenomics evidence from the public [CPIC Database API](https://api.cpicpgx.org/v1/): evaluated gene–drug pairs, guidelines, allele function and frequency, diplotype-to-phenotype translation, and prescribing recommendations, with ClinPGx testing labels and guideline links. You can discover pairs, translate a patient's diplotype, and browse recommendations or match them against explicitly supplied gene results. All six tools are read-only, need no API key, and run as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
 
 ### Tools
 
@@ -32,7 +38,7 @@ Clinical pharmacogenomics evidence from the public [CPIC Database API](https://a
 | `pgx_search_pairs` | Search evaluated gene–drug pairs by gene, drug, RxNorm/ATC identifier, CPIC level or testing label |
 | `pgx_get_guideline` | Retrieve guideline coverage by ID, gene or drug, with related drugs and pairs |
 | `pgx_lookup_diplotype` | Translate a diplotype or HLA allele status into its gene result, activity score and lookup key |
-| `pgx_get_recommendations` | Browse a drug's prescribing recommendations, or match explicit gene results or genotypes |
+| `pgx_get_recommendations` | Browse or match source prescribing recommendations and opt-in example CDS test alerts |
 | `pgx_search_alleles` | Inspect allele function, evidence, definition metadata and population frequencies |
 | `pgx_list_reference` | List genes, gene-specific results, controlled vocabulary and input formats |
 
@@ -41,7 +47,8 @@ Clinical pharmacogenomics evidence from the public [CPIC Database API](https://a
 ### `pgx_search_pairs` <sub>tool</sub>
 
 - Optional filters, combined with AND: `geneSymbol`, `drugName` (literal substring), `drugId`, `rxnormId`, `atcId` (exact code, no hierarchy expansion), `cpicLevel`, `provisional`, `pgxTesting` and `usedForRecommendation`.
-- `limit` 1–100 (default 25); continue from `page.nextOffset`.
+- RxNorm/ATC prefixes and ATC letters accept any casing in both advertised schemas and runtime validation. Outer whitespace is ignored; blank identifiers are unset.
+- `limit` defaults to 25; positive safe integers above 100 clamp to 100 with a notice. Continue from `page.nextOffset`.
 - Returns complete pair records, each with its drug record and guideline link. `Retired` pairs appear only with `includeRetired: true` or `cpicLevel: "Retired"`.
 
 ---
@@ -71,15 +78,18 @@ Clinical pharmacogenomics evidence from the public [CPIC Database API](https://a
 
 ### `pgx_get_recommendations` <sub>tool</sub>
 
+- Omit `view` or use `view: "recommendations"` for prescribing recommendations. `view: "test_alerts"` selects CPIC's example CDS language with the same drug, genotype, result, population and paging selectors; it does not fetch recommendations or join guidelines.
 - `mode: "drug"` takes exactly one of `drugName` (exact, case-insensitive) or `drugId`.
   - On its own, or with `geneSymbol` or `population`, it browses (`exploratory`).
   - To match, add `phenotype` or `activityScore`. These need `geneSymbol` when the drug's recommendations involve several genes.
   - Alternatively, add a `geneResults` map: 1–10 genes, each `{ kind: "phenotype" | "activityScore" | "alleleStatus", value }`.
 - `mode: "genotype"` takes `genotype`: 1–10 gene → diplotype entries, each of which must resolve uniquely. An optional drug selector narrows the results.
 - `mode: "results"` discovers across drugs from `geneResults`, or `geneSymbol` with one `phenotype`/`activityScore`. An optional drug selector narrows the results. Unrelated panel genes do not exclude a recommendation; conflicting results for its prerequisites do.
-- All modes accept an exact `population`, `limit` 1–50 (default 10) and `offset`. `incompleteLimit` 1–100 (default 25) and `incompleteOffset` page missing-gene diagnostics independently through `incompletePage.nextOffset`.
-- `status` is `exploratory`, `matched`, `no_match`, `incomplete` or `unresolved`. A row matches only when every gene in its lookup key has an explicit result. `incompleteMatches` lists the rows that need more genes, with their `missingGenes` and without prescribing text.
+- Source gene `lookupmethod` determines accepted result kinds: `PHENOTYPE` permits `phenotype`; `ACTIVITY_SCORE` permits `phenotype` or `activityScore`; `ALLELE_STATUS` permits `alleleStatus`. Values are validated against source result/score fields. Phenotypes never become calculated scores. Inspect `pgx_list_reference` topics `genes` and `phenotypes` before matching.
+- All modes accept an exact `population`, `limit` (default 10) and `offset`. Positive safe-integer limits above 50 clamp to 50 with a notice. `incompleteLimit` (default 25) independently clamps above 100; `incompleteOffset` pages missing-gene diagnostics through `incompletePage.nextOffset`.
+- `status` is `exploratory`, `matched`, `no_match`, `incomplete` or `unresolved`. Drug and results matching require at least one overlapping supplied gene, reject conflicts on overlapping prerequisites, and ignore unrelated validated panel genes. A row matches only when every gene in its lookup key has an explicit result. `incompleteMatches` lists the rows that need more genes, with their `missingGenes` and without prescribing text.
 - Empty-result notices distinguish unresolved drugs, absent recommendation tables, population mismatches and past-end pages. Where source coverage exists, a no-table notice links the guideline for consultation.
+- Alert view returns complete source records in `alerts`, including ordered `alerttext`, singular `phenotype`, lookup keys, allele statuses, scores, populations and versions. `No CDS`, `n/a`, sparse fields and explicit source `No Result` rows remain intact. Omitted genetics never become `No Result`. Missing prerequisites appear only as `{ testAlertId, drugId, missingGenes }` in `incompleteAlerts`, without alert text. `items` and `incompleteMatches` remain empty; `page` and `incompletePage` describe alerts and diagnostics. Default responses omit both alert fields.
 
 ---
 
@@ -98,7 +108,7 @@ Clinical pharmacogenomics evidence from the public [CPIC Database API](https://a
   - `genes` — optional `geneSymbol` filter
   - `phenotypes` — requires `geneSymbol`
   - `cpic_levels`, `pgx_testing`, `classifications`, `input_formats`
-- The two live topics (`genes`, `phenotypes`) page with `limit` 1–100 (default 25) and `offset`. They return full gene and gene-result records, including distinct activity scores, frequencies and consultation text.
+- The two live topics (`genes`, `phenotypes`) page with `limit` (default 25) and `offset`; positive safe-integer limits above 100 clamp to 100 with a notice. They return full gene and gene-result records, including distinct activity scores, frequencies and consultation text.
 - Static topics return their whole vocabulary without calling the CPIC API. They reject `geneSymbol` and carry a `verificationDate`.
 
 ## Features
@@ -127,6 +137,25 @@ Data comes from the [CPIC Database](https://api.cpicpgx.org/v1/) and [ClinPGx](h
 The database tables can omit guideline nuances or lag behind guideline updates, so check each linked guideline before clinical use. Results apply only to their stated genes, drugs, populations and indications, and treatment decisions remain with the clinician and patient. The server stores no patient records, but genetic queries are sent to the CPIC API, and the request URLs, which contain them, appear in responses.
 
 ## Getting started
+
+### Public Hosted Instance
+
+A public instance is available at `https://pharmacogenomics-guidelines.caseyjhand.com/mcp` — no installation required. Point any MCP client at it via Streamable HTTP:
+
+```json
+{
+  "mcpServers": {
+    "pharmacogenomics-guidelines-mcp-server": {
+      "type": "streamable-http",
+      "url": "https://pharmacogenomics-guidelines.caseyjhand.com/mcp"
+    }
+  }
+}
+```
+
+Queries to the hosted instance pass through its server on the way to the CPIC API. For patient data, run your own instance.
+
+### Self-Hosted / Local
 
 Add the following to your MCP client configuration file:
 

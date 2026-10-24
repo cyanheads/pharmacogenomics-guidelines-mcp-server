@@ -14,7 +14,7 @@ import { resolveDiplotype } from './evidence.js';
 import { emptyPageNotice } from './notices.js';
 import { clinicalCaveat } from './provenance.js';
 import type { CpicFilter } from './query.js';
-import type { DiplotypeKey, Drug, Recommendation } from './records.js';
+import type { DiplotypeKey, Drug, Recommendation, TestAlert } from './records.js';
 
 /** An explicitly supplied gene result, never inferred from another result kind. */
 export type ExplicitGeneResult = {
@@ -34,6 +34,7 @@ export interface RecommendationQuery extends DrugSelector {
   offset: number;
   phenotype?: string;
   population?: string;
+  view?: 'recommendations' | 'test_alerts';
 }
 type Resolution = Omit<Awaited<ReturnType<typeof resolveDiplotype>>, 'provenance'>;
 type IncompleteMatch = { recommendationId: number; drugId: string | null; missingGenes: string[] };
@@ -120,6 +121,33 @@ async function resolveResults(
   const resolved: Record<string, ExplicitGeneResult> = {};
   const candidates: { gene: string; column: string; values: string[] }[] = [];
   for (const [index, [gene, input]] of Object.entries(inputs).entries()) {
+    const unsupported = () =>
+      validationError(
+        `Unsupported or ambiguous source result in ${field ?? `geneResults entry ${index + 1} (${input.kind})`}.`,
+        {
+          reason: 'unsupported_gene_result',
+          field: field ?? 'geneResults',
+          ...(field === undefined && { entry: index + 1 }),
+          kind: input.kind,
+          retryable: false,
+        },
+      );
+    const metadata = await workflow.scan('gene', {
+      filters: [{ column: 'symbol', operator: 'eq', value: gene }],
+    });
+    if (metadata.length === 0) throw unsupported();
+    const method = metadata.length === 1 ? metadata[0]?.lookupmethod : undefined;
+    if (method !== 'PHENOTYPE' && method !== 'ACTIVITY_SCORE' && method !== 'ALLELE_STATUS')
+      throw serializationError('CPIC gene metadata lacks unambiguous supported result semantics.', {
+        retryable: false,
+      });
+    const compatible =
+      method === 'ACTIVITY_SCORE'
+        ? input.kind === 'phenotype' || input.kind === 'activityScore'
+        : method === 'PHENOTYPE'
+          ? input.kind === 'phenotype'
+          : input.kind === 'alleleStatus';
+    if (!compatible) throw unsupported();
     const references = await workflow.scan('gene_result', {
       filters: [{ column: 'genesymbol', operator: 'eq', value: gene }],
     });
@@ -150,16 +178,7 @@ async function resolveResults(
         matches.every((value) => equalScore(value, supplied))
       )
     )
-      throw validationError(
-        `Unsupported or ambiguous source result in ${field ?? `geneResults entry ${index + 1} (${input.kind})`}.`,
-        {
-          reason: 'unsupported_gene_result',
-          field: field ?? 'geneResults',
-          ...(field === undefined && { entry: index + 1 }),
-          kind: input.kind,
-          retryable: false,
-        },
-      );
+      throw unsupported();
     resolved[gene] = { kind: input.kind, value: selected ?? supplied };
     candidates.push({
       gene,
@@ -180,10 +199,11 @@ async function collectCandidates(
   filters: CpicFilter[],
   candidates: { gene: string; column: string; values: string[] }[],
   byId = new Map<number, Recommendation>(),
+  endpoint: 'recommendation' | 'test_alert' = 'recommendation',
 ) {
   for (const { gene, column, values } of candidates) {
     for (const value of values) {
-      const rows = await workflow.scan('recommendation', {
+      const rows = await workflow.scan(endpoint, {
         filters: [...filters, { column, operator: 'contains', value: { [gene]: value } }],
       });
       for (const row of rows) {
@@ -194,8 +214,13 @@ async function collectCandidates(
   }
   return [...byId.values()].sort((left, right) => left.id - right.id);
 }
-function matchesResult(row: Recommendation, gene: string, result: ExplicitGeneResult): boolean {
-  if (result.kind === 'phenotype') return row.phenotypes?.[gene] === result.value;
+function matchesResult(
+  row: Recommendation,
+  gene: string,
+  result: ExplicitGeneResult,
+  phenotype: Recommendation['phenotypes'],
+): boolean {
+  if (result.kind === 'phenotype') return phenotype?.[gene] === result.value;
   if (result.kind === 'activityScore') {
     const score = row.activityscore?.[gene];
     const key = row.lookupkey?.[gene];
@@ -216,6 +241,43 @@ function matchesResult(row: Recommendation, gene: string, result: ExplicitGeneRe
 
 /** Retrieve exploratory source rows or require every genetic prerequisite before matching. */
 export async function getRecommendations(workflow: CpicWorkflow, input: RecommendationQuery) {
+  const alertsView = input.view === 'test_alerts';
+  const endpoint = alertsView ? 'test_alert' : 'recommendation';
+  const noMatchNotice = alertsView
+    ? 'No test alerts matched. Call pgx_list_reference with topic phenotypes for source gene results or browse the drug without genetic filters.'
+    : noMatch;
+  const incompleteResultNotice = alertsView
+    ? 'Test alerts require additional gene results. Supply the listed missingGenes; omitted genes are never assumed normal, negative or No Result.'
+    : incompleteNotice;
+  const exploratoryResultNotice = alertsView
+    ? 'Exploratory source test alerts: no genetic match has been established. Example CDS language is distinct from prescribing recommendations.'
+    : exploratoryNotice;
+  function validateRows(rows: Recommendation[]) {
+    if (!alertsView) rows.forEach(requireRelations);
+    else if (
+      input.mode === 'genotype' ||
+      input.phenotype !== undefined ||
+      input.activityScore !== undefined ||
+      input.geneResults !== undefined
+    ) {
+      for (const row of rows) {
+        const keys = row.lookupkey;
+        if (
+          !keys ||
+          Object.keys(keys).length === 0 ||
+          (row as TestAlert).genes?.some((gene) => !Object.hasOwn(keys, gene))
+        )
+          throw serializationError('CPIC test alert lacks complete genetic lookup prerequisites.', {
+            retryable: false,
+          });
+      }
+    }
+  }
+  function tableNotice(drug: Drug) {
+    return alertsView
+      ? 'This CPIC drug has no tabulated test alerts. Call pgx_get_guideline by drug to inspect source guideline coverage.'
+      : noTableNotice(workflow, drug);
+  }
   const geneResolutions: Resolution[] = [];
   const incompleteMatches: IncompleteMatch[] = [];
   const notices: string[] = [];
@@ -242,19 +304,28 @@ export async function getRecommendations(workflow: CpicWorkflow, input: Recommen
   ) {
     const matchedPage = pageRows(rows, input);
     if (matchedPage.page.total > 0 && !matchedPage.items.length)
-      notices.push(emptyPageNotice(matchedPage.page, noMatch));
+      notices.push(emptyPageNotice(matchedPage.page, noMatchNotice));
     const incompletePage = pageRows(incompleteMatches, {
       limit: input.incompleteLimit,
       offset: input.incompleteOffset,
     });
     if (incompletePage.page.total > 0 && !incompletePage.items.length)
       notices.push(
-        `Incomplete diagnostics: ${emptyPageNotice(incompletePage.page, incompleteNotice)}`,
+        `Incomplete diagnostics: ${emptyPageNotice(incompletePage.page, incompleteResultNotice)}`,
       );
     return {
       status,
       ...matchedPage,
-      incompleteMatches: incompletePage.items,
+      ...(alertsView && {
+        items: [],
+        // The selected endpoint schema validates these records before matching.
+        alerts: matchedPage.items as TestAlert[],
+        incompleteAlerts: incompletePage.items.map(({ recommendationId, ...rest }) => ({
+          testAlertId: recommendationId,
+          ...rest,
+        })),
+      }),
+      incompleteMatches: alertsView ? [] : incompletePage.items,
       incompletePage: incompletePage.page,
       geneResolutions,
       clinicalCaveat,
@@ -290,22 +361,23 @@ export async function getRecommendations(workflow: CpicWorkflow, input: Recommen
     input.geneSymbol === undefined &&
     input.population === undefined
   ) {
-    const result = await workflow.page('recommendation', {
+    const result = await workflow.page(endpoint, {
       filters,
       limit: input.limit,
       offset: input.offset,
     });
-    result.items.forEach(requireRelations);
-    notices.push(exploratoryNotice);
+    validateRows(result.items);
+    notices.push(exploratoryResultNotice);
     if (result.items.length === 0)
       notices.push(
         result.page.total === 0 && drug
-          ? await noTableNotice(workflow, drug)
-          : emptyPageNotice(result.page, noMatch),
+          ? await tableNotice(drug)
+          : emptyPageNotice(result.page, noMatchNotice),
       );
     return {
       status: 'exploratory' as const,
       items: result.items,
+      ...(alertsView && { items: [], alerts: result.items as TestAlert[], incompleteAlerts: [] }),
       page: result.page,
       incompleteMatches,
       incompletePage: pageRows(incompleteMatches, {
@@ -342,14 +414,14 @@ export async function getRecommendations(workflow: CpicWorkflow, input: Recommen
     for (const resolution of geneResolutions) {
       const record = resolution.records[0];
       if (
-        !record?.diplotypekey?.[resolution.geneSymbol] ||
-        !record.lookupkey?.[resolution.geneSymbol]
+        !record?.lookupkey?.[resolution.geneSymbol] ||
+        (!alertsView && !record.diplotypekey?.[resolution.geneSymbol])
       )
         throw serializationError(
           'CPIC diplotype lacks its required source genotype or lookup key.',
           { retryable: false },
         );
-      for (const [gene, key] of Object.entries(record.diplotypekey)) {
+      for (const [gene, key] of Object.entries(alertsView ? {} : (record.diplotypekey ?? {}))) {
         if (
           !entries.some(([supplied]) => supplied === gene) ||
           (diplotypeLookup[gene] !== undefined &&
@@ -373,7 +445,9 @@ export async function getRecommendations(workflow: CpicWorkflow, input: Recommen
         genotypeKeys[gene] = key;
       }
     }
-    const candidates = await workflow.scan('rpc/recommendation_lookup', { diplotypeLookup });
+    const candidates = alertsView
+      ? []
+      : await workflow.scan('rpc/recommendation_lookup', { diplotypeLookup });
     const ids = [...new Set(candidates.map((row) => row.recommendationid))];
     const byId = new Map<number, Recommendation>();
     for (let start = 0; start < ids.length; start += 100) {
@@ -399,23 +473,24 @@ export async function getRecommendations(workflow: CpicWorkflow, input: Recommen
         values: [value],
       })),
       byId,
+      endpoint,
     );
     if (drug) rows = rows.filter((row) => row.drugid === drug.drugid);
-  } else rows = input.mode === 'drug' ? await workflow.scan('recommendation', { filters }) : [];
-  rows.forEach(requireRelations);
+  } else rows = input.mode === 'drug' ? await workflow.scan(endpoint, { filters }) : [];
+  validateRows(rows);
   if (drug && rows.length === 0 && input.mode !== 'results') {
     const tableEmpty =
       input.mode === 'drug' ||
-      (await workflow.page('recommendation', { filters, limit: 1 })).page.total === 0;
-    if (tableEmpty) notices.push(await noTableNotice(workflow, drug));
+      (await workflow.page(endpoint, { filters, limit: 1 })).page.total === 0;
+    if (tableEmpty) notices.push(await tableNotice(drug));
   }
   const availableGenes = [...new Set(rows.flatMap((row) => Object.keys(row.lookupkey ?? {})))];
   rows = selectPopulation(rows);
   if (input.mode === 'drug' && !hasResult) {
     if (input.geneSymbol)
       rows = rows.filter((row) => Object.hasOwn(row.lookupkey ?? {}, input.geneSymbol as string));
-    notices.push(exploratoryNotice);
-    if (rows.length === 0 && !populationMiss && notices.length === 1) notices.push(noMatch);
+    notices.push(exploratoryResultNotice);
+    if (rows.length === 0 && !populationMiss && notices.length === 1) notices.push(noMatchNotice);
     return finish('exploratory', rows);
   }
   let supplied = input.geneResults ?? {};
@@ -447,14 +522,23 @@ export async function getRecommendations(workflow: CpicWorkflow, input: Recommen
       : { resolved: {}, candidates: [] };
   const resolved = resolution.resolved;
   if (input.mode === 'results') {
-    rows = await collectCandidates(workflow, filters, resolution.candidates);
-    rows.forEach(requireRelations);
+    rows = await collectCandidates(
+      workflow,
+      filters,
+      resolution.candidates.map((candidate) => ({
+        ...candidate,
+        column: alertsView && candidate.column === 'phenotypes' ? 'phenotype' : candidate.column,
+      })),
+      new Map(),
+      endpoint,
+    );
+    validateRows(rows);
     if (
       drug &&
       rows.length === 0 &&
-      (await workflow.page('recommendation', { filters, limit: 1 })).page.total === 0
+      (await workflow.page(endpoint, { filters, limit: 1 })).page.total === 0
     )
-      notices.push(await noTableNotice(workflow, drug));
+      notices.push(await tableNotice(drug));
     rows = selectPopulation(rows);
   }
   const resolvedEntries = Object.entries(resolved);
@@ -463,12 +547,17 @@ export async function getRecommendations(workflow: CpicWorkflow, input: Recommen
     const keys = Object.entries(row.lookupkey ?? {});
     if (
       input.mode !== 'genotype' &&
-      (input.mode === 'results'
-        ? !keys.some(([gene]) => resolved[gene] !== undefined) ||
-          !resolvedEntries
-            .filter(([gene]) => Object.hasOwn(row.lookupkey ?? {}, gene))
-            .every(([gene, result]) => matchesResult(row, gene, result))
-        : !resolvedEntries.every(([gene, result]) => matchesResult(row, gene, result)))
+      (!keys.some(([gene]) => resolved[gene] !== undefined) ||
+        !resolvedEntries
+          .filter(([gene]) => Object.hasOwn(row.lookupkey ?? {}, gene))
+          .every(([gene, result]) =>
+            matchesResult(
+              row,
+              gene,
+              result,
+              alertsView ? (row as TestAlert).phenotype : row.phenotypes,
+            ),
+          ))
     )
       continue;
     if (
@@ -494,8 +583,8 @@ export async function getRecommendations(workflow: CpicWorkflow, input: Recommen
     }
     matched.push(row);
   }
-  if (incompleteMatches.length) notices.push(incompleteNotice);
-  if (!matched.length && !incompleteMatches.length && !notices.length) notices.push(noMatch);
+  if (incompleteMatches.length) notices.push(incompleteResultNotice);
+  if (!matched.length && !incompleteMatches.length && !notices.length) notices.push(noMatchNotice);
   return finish(
     matched.length ? 'matched' : incompleteMatches.length ? 'incomplete' : 'no_match',
     matched,

@@ -124,7 +124,7 @@ export const pgxSearchPairs = tool('pgx_search_pairs', {
     },
   ],
   async handler(input, ctx) {
-    const query = { ...input };
+    const query = { ...input, limit: Math.min(input.limit, 100) };
     for (const key of ['geneSymbol', 'drugName', 'drugId', 'rxnormId', 'atcId'] as const) {
       const value = optionalText(input[key]);
       if (value === undefined) delete query[key];
@@ -134,7 +134,8 @@ export const pgxSearchPairs = tool('pgx_search_pairs', {
     if (query.rxnormId) query.rxnormId = query.rxnormId.replace(/^RxNorm:/i, '');
     if (query.atcId) query.atcId = query.atcId.replace(/^ATC:/i, '').toUpperCase();
     const result = await getCpicService().workflow(ctx, (workflow) => searchPairs(workflow, query));
-    const notices: string[] = [];
+    const notices: string[] =
+      input.limit > 100 ? ['Requested limit clamped to the 100-row cap.'] : [];
     if (result.items.length === 0)
       notices.push(
         emptyPageNotice(

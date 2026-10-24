@@ -269,7 +269,12 @@ describe('pgx_list_reference', () => {
         throw new Error('static topic fetched');
       });
       const output = twin(
-        await runToolContract(pgxListReference, { topic, geneSymbol: ' ', offset: 999, limit: 1 }),
+        await runToolContract(pgxListReference, {
+          topic,
+          geneSymbol: ' ',
+          offset: 999,
+          limit: 101,
+        }),
       );
       expect(output).toMatchObject({
         page: { offset: 0, limit: 100, nextOffset: null },
@@ -350,6 +355,7 @@ describe.each([
         await runToolContract(tool, {
           ...input,
           offset,
+          limit: 101,
           geneSymbol: ' ',
           ...(tool.name === 'pgx_search_pairs'
             ? { drugName: '', drugId: '', rxnormId: '', atcId: '' }
@@ -359,9 +365,10 @@ describe.each([
     ).toMatchObject({
       items: [],
       shown: 0,
-      cap: 25,
+      cap: 100,
       truncated: false,
-      page: { offset, total: offset ? 3 : 0, nextOffset: null },
+      page: { offset, total: offset ? 3 : 0, nextOffset: null, limit: 100 },
+      effectiveQuery: { limit: 100 },
     });
   });
   it('returns all 100 rows and a valid nextOffset without a source count', async () => {
@@ -369,12 +376,14 @@ describe.each([
       tool.name === 'pgx_search_pairs' ? { pairid: i, drugid: null } : { symbol: `G${i}` },
     );
     network(() => Response.json(rows));
-    const output = twin(await runToolContract(tool, { ...input, limit: 100 }));
+    const output = twin(await runToolContract(tool, { ...input, limit: 101 }));
     expect(output).toMatchObject({
       shown: 100,
       cap: 100,
       truncated: true,
       page: { total: null, returned: 100, nextOffset: 100 },
+      effectiveQuery: { limit: 100 },
+      notices: expect.arrayContaining(['Requested limit clamped to the 100-row cap.']),
     });
     expect(output.items).toHaveLength(100);
   });
@@ -417,7 +426,7 @@ describe.each([
   );
   it('rejects invalid schema fields before fetch', async () => {
     const requests = network(() => source([]));
-    const result = await runToolContract(tool, { ...input, limit: 101, guidelineId: -1 });
+    const result = await runToolContract(tool, { ...input, limit: 0 });
     expect(result.isError).toBe(true);
     expect(requests).toEqual([]);
   });

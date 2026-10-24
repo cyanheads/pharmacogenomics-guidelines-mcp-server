@@ -12,6 +12,7 @@ import {
   provenanceSchema,
   type RecommendationQuery,
   RecommendationSchema,
+  TestAlertSchema,
 } from '@/services/cpic/index.js';
 import { formatLossless, renderLossless } from '../shared/lossless-renderer.js';
 import {
@@ -49,8 +50,16 @@ const geneResultSchema = z
       value: resultValue,
     }),
   ])
-  .describe('An explicit gene result; distinct kinds are never inferred from one another.');
+  .describe(
+    'Source gene semantics determine allowed kinds: PHENOTYPE permits phenotype; ACTIVITY_SCORE permits phenotype or activityScore; ALLELE_STATUS permits alleleStatus. Kinds are never converted.',
+  );
 const inputSchema = z.object({
+  view: z
+    .enum(['recommendations', 'test_alerts'])
+    .optional()
+    .describe(
+      'Select source recommendations (default) or example CDS test alerts with the same selectors and independent paging.',
+    ),
   mode: z
     .enum(['drug', 'genotype', 'results'])
     .describe(
@@ -110,9 +119,11 @@ const inputSchema = z.object({
     .number()
     .int()
     .min(1)
-    .max(100)
+    .max(Number.MAX_SAFE_INTEGER)
     .default(25)
-    .describe('Maximum incomplete diagnostics per page (default 25; maximum 100).'),
+    .describe(
+      'Positive safe-integer incomplete diagnostic limit; values above 100 are clamped to 100 with a notice (default 25).',
+    ),
   incompleteOffset: z
     .number()
     .int()
@@ -140,7 +151,7 @@ const resolutionSchema = z
 export const getRecommendationsTool = tool('pgx_get_recommendations', {
   title: 'Get recommendations',
   description:
-    'Browse CPIC recommendations in drug mode with one exact drugName or drugId. Match across drugs in results mode with geneResults or geneSymbol plus phenotype/activityScore, or genotype mode with 1–10 uniquely resolved gene/diplotype entries. Both matching modes accept an optional drug. Use pgx_list_reference topic phenotypes for source values. Every matched prerequisite must be explicit; omitted genes are never normal or negative. Preserve populations, scores, classifications and source text. Follow page.nextOffset and incompletePage.nextOffset independently; consult linked guidelines before clinical use.',
+    'Browse CPIC recommendations in drug mode with one exact drugName or drugId. Match across drugs in results mode with geneResults or geneSymbol plus phenotype/activityScore, or genotype mode with 1–10 uniquely resolved gene/diplotype entries. Both matching modes accept an optional drug. Optional view=test_alerts selects complete example CDS alerts instead of recommendations, without joins; default view=recommendations. Alert records retain ordered alerttext, No CDS and n/a. Use pgx_list_reference topic phenotypes for source values. Every matched prerequisite must be explicit; omitted genes are never normal, negative or No Result. Preserve populations, scores, classifications and source text. Follow page.nextOffset and incompletePage.nextOffset independently for the selected collection and missing-gene diagnostics; consult source guidelines before clinical use.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: inputSchema,
   output: z.object({
@@ -154,6 +165,26 @@ export const getRecommendationsTool = tool('pgx_get_recommendations', {
       .describe(
         'Complete source records; matched rows have every required gene result explicitly supplied.',
       ),
+    alerts: z
+      .array(TestAlertSchema)
+      .optional()
+      .describe(
+        'Complete source alerts in test_alerts view only; recommendation items remain empty.',
+      ),
+    incompleteAlerts: z
+      .array(
+        z
+          .object({
+            testAlertId: z.number().int().describe('Source test-alert identifier.'),
+            drugId: z.string().nullable().describe('Source drug identifier, or null.'),
+            missingGenes: z
+              .array(z.string().describe('An explicitly required gene.'))
+              .describe('Missing source prerequisites; alert text is withheld.'),
+          })
+          .describe('Unmatched alert requiring additional explicit results.'),
+      )
+      .optional()
+      .describe('Independently paged incomplete alerts in test_alerts view only.'),
     incompleteMatches: z
       .array(
         z
@@ -215,9 +246,9 @@ export const getRecommendationsTool = tool('pgx_get_recommendations', {
       reason: 'unsupported_gene_result',
       code: JsonRpcErrorCode.ValidationError,
       thrownBy: 'service',
-      when: 'A nonempty supplied result is unsupported or ambiguous for its gene.',
+      when: 'A supplied result kind is incompatible with source gene semantics, or its value is unsupported or ambiguous.',
       recovery:
-        'Call pgx_list_reference with topic phenotypes for this gene and retry pgx_get_recommendations with a returned value.',
+        'Call pgx_list_reference with topic genes to inspect lookupmethod and topic phenotypes for source values; retry with a compatible result kind and value.',
     },
     {
       reason: 'query_too_broad',
@@ -347,9 +378,10 @@ export const getRecommendationsTool = tool('pgx_get_recommendations', {
       );
     const effectiveQuery: RecommendationQuery = {
       mode: input.mode,
-      limit: input.limit,
+      ...(input.view !== undefined && { view: input.view }),
+      limit: Math.min(input.limit, 50),
       offset: input.offset,
-      incompleteLimit: input.incompleteLimit,
+      incompleteLimit: Math.min(input.incompleteLimit, 100),
       incompleteOffset: input.incompleteOffset,
       ...(drugName !== undefined && { drugName }),
       ...(drugId !== undefined && { drugId }),
@@ -365,10 +397,16 @@ export const getRecommendationsTool = tool('pgx_get_recommendations', {
     );
     ctx.enrich({
       effectiveQuery,
-      notices,
+      notices: [
+        ...notices,
+        ...(input.limit > 50 ? ['Requested limit clamped to the 50-row cap.'] : []),
+        ...(input.incompleteLimit > 100
+          ? ['Requested incompleteLimit clamped to the 100-row cap.']
+          : []),
+      ],
       truncated: result.page.nextOffset !== null,
       shown: result.page.returned,
-      cap: input.limit,
+      cap: effectiveQuery.limit,
     });
     return result;
   },

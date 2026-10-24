@@ -203,6 +203,24 @@ export const RecommendationSchema = z
     drug: DrugSchema.nullable().optional().describe('Full embedded source drug, null, or omitted.'),
   })
   .describe('Source recommendation with guideline and drug records.');
+/** Complete example CDS alerts; text array order and sparse source fields remain intact. */
+export const TestAlertSchema = z
+  .looseObject({
+    id,
+    cdscontext: z.string().describe('Original source CDS context, including No CDS.'),
+    alerttext: z
+      .array(z.string().describe('Exact source alert text.'))
+      .describe('Complete source alert text in original order, including n/a.'),
+    population: text,
+    genes: strings,
+    phenotype: values.describe('Singular source gene-to-phenotype map.'),
+    activityscore: values,
+    allelestatus: values,
+    lookupkey: values,
+    drugid: text,
+    version: integer,
+  })
+  .describe('Source example test alert; distinct from prescribing recommendations.');
 /** RPC candidate rows are distinct from full recommendation records. */
 export const RecommendationLookupSchema = z
   .looseObject({
@@ -272,6 +290,7 @@ export const recordSchemas = {
   gene_result: GeneResultSchema,
   diplotype: DiplotypeSchema,
   recommendation: RecommendationSchema,
+  test_alert: TestAlertSchema,
   allele: AlleleSchema,
   population_frequency_view: PopulationFrequencySchema,
   'rpc/recommendation_lookup': RecommendationLookupSchema,
@@ -294,6 +313,8 @@ export type GeneResult = z.infer<typeof GeneResultSchema>;
 export type Diplotype = z.infer<typeof DiplotypeSchema>;
 /** Source recommendation record. */
 export type Recommendation = z.infer<typeof RecommendationSchema>;
+/** Source example CDS test alert. */
+export type TestAlert = z.infer<typeof TestAlertSchema>;
 /** Source RPC candidate record. */
 export type RecommendationLookup = z.infer<typeof RecommendationLookupSchema>;
 /** Source allele record. */
