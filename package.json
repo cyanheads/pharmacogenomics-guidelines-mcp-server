@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/pharmacogenomics-guidelines-mcp-server",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "mcpName": "io.github.cyanheads/pharmacogenomics-guidelines-mcp-server",
   "description": "Find pharmacogenomics guidelines, translate diplotypes, and retrieve prescribing recommendations via MCP. STDIO or Streamable HTTP.",
   "author": "Casey Hand <casey@caseyjhand.com> (https://caseyjhand.com)",

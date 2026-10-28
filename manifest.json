@@ -1,7 +1,7 @@
 {
   "manifest_version": "0.3",
   "name": "pharmacogenomics-guidelines-mcp-server",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Find pharmacogenomics guidelines, translate diplotypes, and retrieve prescribing recommendations via MCP. STDIO or Streamable HTTP.",
   "author": {
     "name": "cyanheads"

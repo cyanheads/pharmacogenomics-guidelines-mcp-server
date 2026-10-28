@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.0](changelog/0.3.x/0.3.0.md) — 2026-10-28
+
+Publishes a pharmacogenomics guide as an MCP skill resource and moves to mcp-ts-core 0.13.18, which stops the HTTP transport from retaining memory on every request.
+
 ## [0.2.1](changelog/0.2.x/0.2.1.md) — 2026-10-24
 
 Retrieve source test alerts with consistent genetic matching.

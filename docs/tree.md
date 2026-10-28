@@ -1,6 +1,6 @@
 # pharmacogenomics-guidelines-mcp-server - Directory Structure
 
-Generated on: 2026-10-24 21:28:55
+Generated on: 2026-10-28 13:27:33
 
 ```text
 pharmacogenomics-guidelines-mcp-server/
@@ -26,6 +26,7 @@ pharmacogenomics-guidelines-mcp-server/
 ├── changelog/
 │   ├── 0.1.x/
 │   ├── 0.2.x/
+│   ├── 0.3.x/
 │   └── template.md
 ├── docs/
 │   └── design.md
@@ -37,6 +38,8 @@ pharmacogenomics-guidelines-mcp-server/
 │   ├── add-resource/
 │   │   └── SKILL.md
 │   ├── add-service/
+│   │   └── SKILL.md
+│   ├── add-skill/
 │   │   └── SKILL.md
 │   ├── add-test/
 │   │   └── SKILL.md
@@ -134,6 +137,9 @@ pharmacogenomics-guidelines-mcp-server/
 │   ├── prune-musl-packages.ts
 │   ├── release-github.ts
 │   └── tree.ts
+├── skills/
+│   └── pharmacogenomics-guidelines-guide/
+│       └── SKILL.md
 ├── src/
 │   ├── mcp-server/
 │   │   ├── prompts/
@@ -168,8 +174,11 @@ pharmacogenomics-guidelines-mcp-server/
 ├── tests/
 │   ├── fuzz/
 │   ├── integration/
+│   │   └── published-skills.int.test.ts
 │   ├── prompts/
 │   ├── resources/
+│   ├── scripts/
+│   │   └── bundle-agent-docs.test.ts
 │   ├── smoke/
 │   ├── tools/
 │   └── unit/
@@ -210,7 +219,9 @@ pharmacogenomics-guidelines-mcp-server/
 ├── Dockerfile
 ├── LICENSE
 ├── manifest.json
+├── mcp.json
 ├── package.json
+├── plugin.json
 ├── README.md
 ├── server.json
 ├── tsconfig.build.json
