@@ -1,6 +1,6 @@
 # pharmacogenomics-guidelines-mcp-server - Directory Structure
 
-Generated on: 2026-10-28 13:27:33
+Generated on: 2026-11-20 22:45:49
 
 ```text
 pharmacogenomics-guidelines-mcp-server/
@@ -27,6 +27,7 @@ pharmacogenomics-guidelines-mcp-server/
 │   ├── 0.1.x/
 │   ├── 0.2.x/
 │   ├── 0.3.x/
+│   ├── 0.4.x/
 │   └── template.md
 ├── docs/
 │   └── design.md
@@ -141,6 +142,8 @@ pharmacogenomics-guidelines-mcp-server/
 │   └── pharmacogenomics-guidelines-guide/
 │       └── SKILL.md
 ├── src/
+│   ├── config/
+│   │   └── server-config.ts
 │   ├── mcp-server/
 │   │   ├── prompts/
 │   │   │   └── definitions/
@@ -157,13 +160,13 @@ pharmacogenomics-guidelines-mcp-server/
 │   │       │   └── search-alleles.tool.ts
 │   │       └── shared/
 │   │           ├── lossless-renderer.ts
-│   │           ├── response-budget.ts
 │   │           └── schemas.ts
 │   ├── services/
 │   │   └── cpic/
 │   │       ├── cpic-service.ts
 │   │       ├── discovery.ts
 │   │       ├── evidence.ts
+│   │       ├── incomplete-matches.ts
 │   │       ├── index.ts
 │   │       ├── notices.ts
 │   │       ├── provenance.ts
@@ -192,7 +195,9 @@ pharmacogenomics-guidelines-mcp-server/
 │       ├── recommendations/
 │       │   ├── boundaries.test.ts
 │       │   ├── fixtures.ts
+│       │   ├── incomplete-diagnostics.test.ts
 │       │   ├── notices.test.ts
+│       │   ├── panel-policy.test.ts
 │       │   ├── partial-candidates.test.ts
 │       │   ├── recommendations-contract.test.ts
 │       │   ├── results-mode.test.ts
@@ -202,7 +207,7 @@ pharmacogenomics-guidelines-mcp-server/
 │           ├── identifier-cost.test.ts
 │           ├── lossless-renderer.test.ts
 │           ├── notices.test.ts
-│           ├── response-budget.test.ts
+│           ├── pagination-contract.test.ts
 │           └── schemas.test.ts
 ├── .dockerignore
 ├── .env.example
@@ -214,6 +219,7 @@ pharmacogenomics-guidelines-mcp-server/
 ├── bun.lock
 ├── bunfig.toml
 ├── CHANGELOG.md
+├── CITATION.cff
 ├── CLAUDE.md
 ├── devcheck.config.json
 ├── Dockerfile
