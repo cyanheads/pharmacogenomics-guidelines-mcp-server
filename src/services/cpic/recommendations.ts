@@ -9,8 +9,9 @@ import {
   validationError,
 } from '@cyanheads/mcp-ts-core/errors';
 import { type CpicWorkflow, queryTooBroad } from './cpic-service.js';
-import { type DrugSelector, resolveDrug } from './discovery.js';
+import { type DrugSelector, findDrugGuidelines, resolveDrug } from './discovery.js';
 import { resolveDiplotype } from './evidence.js';
+import { type IncompleteMatch, summarizeIncompleteMatches } from './incomplete-matches.js';
 import { emptyPageNotice } from './notices.js';
 import { clinicalCaveat } from './provenance.js';
 import type { CpicFilter } from './query.js';
@@ -37,27 +38,25 @@ export interface RecommendationQuery extends DrugSelector {
   view?: 'recommendations' | 'test_alerts';
 }
 type Resolution = Omit<Awaited<ReturnType<typeof resolveDiplotype>>, 'provenance'>;
-type IncompleteMatch = { recommendationId: number; drugId: string | null; missingGenes: string[] };
 const noMatch =
   'No recommendations matched. Call pgx_search_pairs to check guideline coverage or pgx_list_reference with topic phenotypes for the supplied gene.';
 const incompleteNotice =
-  'Recommendations require additional gene results. Supply the listed missingGenes to pgx_get_recommendations; omitted genes are not assumed normal.';
+  'Recommendations require additional gene results. Supply results for the listed missingGenes or missingAlleles; omitted results are not assumed normal or negative.';
 const exploratoryNotice =
   'Exploratory source recommendations: no genotype or phenotype match has been established.';
 
 async function noTableNotice(workflow: CpicWorkflow, drug: Drug): Promise<string> {
   const fallback =
     'This CPIC drug has no tabulated recommendation rows. Call pgx_get_guideline by drug to inspect source guideline coverage.';
-  if (drug.guidelineid == null) return fallback;
   try {
-    const result = await workflow.page('guideline', {
-      filters: [{ column: 'id', operator: 'eq', value: drug.guidelineid }],
-      limit: 1,
-    });
-    const guideline = result.items[0];
-    return guideline
-      ? `This CPIC drug has no tabulated recommendation rows. Consult guideline ${guideline.name}${guideline.url ? `: ${guideline.url}` : ' with pgx_get_guideline by id'}.`
-      : fallback;
+    const guidelines = await findDrugGuidelines(workflow, drug);
+    if (guidelines.length === 0) return fallback;
+    const consultation = guidelines.map((guideline) =>
+      guideline.url
+        ? `${guideline.name} (${guideline.url})`
+        : `${guideline.name} (pgx_get_guideline by ID ${guideline.id})`,
+    );
+    return `This CPIC drug has no tabulated recommendation rows. Consult the source guidelines. ${consultation.join(' | ')}`;
   } catch (error) {
     if (error instanceof McpError && error.code === JsonRpcErrorCode.RequestCancelled) throw error;
     return `${fallback} Guideline details could not be retrieved during this call.`;
@@ -81,6 +80,11 @@ function statusAlias(gene: string, value: string): string {
   return value.startsWith(gene) && value.slice(gene.length).trim().startsWith('*')
     ? value.slice(gene.length).trim()
     : value;
+}
+function hlaAllele(gene: string, value: string): string | undefined {
+  if (gene === 'HLA-A' || gene === 'HLA-B')
+    return /^(\*\d+(?::\d+)+) (?:positive|negative)$/i.exec(statusAlias(gene, value))?.[1];
+  return undefined;
 }
 function requireRelations(row: Recommendation): void {
   if (
@@ -203,8 +207,12 @@ async function collectCandidates(
 ) {
   for (const { gene, column, values } of candidates) {
     for (const value of values) {
+      const predicate: CpicFilter =
+        (gene === 'HLA-A' || gene === 'HLA-B') && column === 'lookupkey' && hlaAllele(gene, value)
+          ? { column: `lookupkey->>${gene}` as const, operator: 'isNotNull' }
+          : { column, operator: 'contains', value: { [gene]: value } };
       const rows = await workflow.scan(endpoint, {
-        filters: [...filters, { column, operator: 'contains', value: { [gene]: value } }],
+        filters: [...filters, predicate],
       });
       for (const row of rows) {
         byId.set(row.id, row);
@@ -247,7 +255,7 @@ export async function getRecommendations(workflow: CpicWorkflow, input: Recommen
     ? 'No test alerts matched. Call pgx_list_reference with topic phenotypes for source gene results or browse the drug without genetic filters.'
     : noMatch;
   const incompleteResultNotice = alertsView
-    ? 'Test alerts require additional gene results. Supply the listed missingGenes; omitted genes are never assumed normal, negative or No Result.'
+    ? 'Test alerts require additional gene results. Supply results for the listed missingGenes or missingAlleles; omitted results are never assumed normal, negative or No Result.'
     : incompleteNotice;
   const exploratoryResultNotice = alertsView
     ? 'Exploratory source test alerts: no genetic match has been established. Example CDS language is distinct from prescribing recommendations.'
@@ -326,6 +334,7 @@ export async function getRecommendations(workflow: CpicWorkflow, input: Recommen
         })),
       }),
       incompleteMatches: alertsView ? [] : incompletePage.items,
+      incompleteDrugs: summarizeIncompleteMatches(incompleteMatches),
       incompletePage: incompletePage.page,
       geneResolutions,
       clinicalCaveat,
@@ -380,6 +389,7 @@ export async function getRecommendations(workflow: CpicWorkflow, input: Recommen
       ...(alertsView && { items: [], alerts: result.items as TestAlert[], incompleteAlerts: [] }),
       page: result.page,
       incompleteMatches,
+      incompleteDrugs: [],
       incompletePage: pageRows(incompleteMatches, {
         limit: input.incompleteLimit,
         offset: input.incompleteOffset,
@@ -541,47 +551,70 @@ export async function getRecommendations(workflow: CpicWorkflow, input: Recommen
       notices.push(await tableNotice(drug));
     rows = selectPopulation(rows);
   }
-  const resolvedEntries = Object.entries(resolved);
   const matched: Recommendation[] = [];
-  for (const row of rows) {
-    const keys = Object.entries(row.lookupkey ?? {});
-    if (
-      input.mode !== 'genotype' &&
-      (!keys.some(([gene]) => resolved[gene] !== undefined) ||
-        !resolvedEntries
-          .filter(([gene]) => Object.hasOwn(row.lookupkey ?? {}, gene))
-          .every(([gene, result]) =>
-            matchesResult(
-              row,
-              gene,
-              result,
-              alertsView ? (row as TestAlert).phenotype : row.phenotypes,
-            ),
-          ))
-    )
-      continue;
-    if (
-      input.mode === 'genotype' &&
-      (!keys.some(([gene]) => genotypeKeys[gene] !== undefined) ||
-        keys.some(
-          ([gene, value]) => genotypeKeys[gene] !== undefined && genotypeKeys[gene] !== value,
-        ))
-    )
-      continue;
-    const missingGenes = keys
-      .filter(([gene]) =>
-        input.mode === 'genotype' ? genotypeKeys[gene] === undefined : resolved[gene] === undefined,
-      )
-      .map(([gene]) => gene);
-    if (missingGenes.length > 0) {
+  candidates: for (const row of rows) {
+    const missingGenes: string[] = [];
+    const missingAlleles: NonNullable<IncompleteMatch['missingAlleles']> = [];
+    let overlaps = false;
+    for (const [gene, value] of Object.entries(row.lookupkey ?? {})) {
+      const result = Object.hasOwn(resolved, gene) ? resolved[gene] : undefined;
+      const genotypeKey = Object.hasOwn(genotypeKeys, gene) ? genotypeKeys[gene] : undefined;
+      if (result === undefined && genotypeKey === undefined) {
+        missingGenes.push(gene);
+        continue;
+      }
+      overlaps = true;
+      if (result) {
+        if (
+          matchesResult(
+            row,
+            gene,
+            result,
+            alertsView ? (row as TestAlert).phenotype : row.phenotypes,
+          )
+        )
+          continue;
+      } else if (genotypeKey === value) continue;
+
+      const sourceAllele = hlaAllele(gene, value);
+      const providedStatus = result?.kind === 'alleleStatus' ? result.value : genotypeKey;
+      const providedAllele =
+        providedStatus === undefined ? undefined : hlaAllele(gene, providedStatus);
+      if (!sourceAllele || !providedAllele || sourceAllele === providedAllele) continue candidates;
+      missingAlleles.push({ geneSymbol: gene, allele: sourceAllele });
+    }
+    if (!overlaps) continue;
+    if (missingGenes.length > 0 || missingAlleles.length > 0) {
+      const drugName = alertsView ? undefined : row.drug?.name;
       incompleteMatches.push({
         recommendationId: row.id,
         drugId: row.drugid ?? null,
         missingGenes,
+        ...(missingAlleles.length > 0 && { missingAlleles }),
+        ...(drugName !== undefined && { drugName }),
       });
       continue;
     }
     matched.push(row);
+  }
+  if (alertsView && incompleteMatches.length > 0) {
+    const drugNames = new Map<string, string>();
+    if (drug) drugNames.set(drug.drugid, drug.name);
+    else {
+      const ids = [
+        ...new Set(incompleteMatches.flatMap(({ drugId }) => (drugId === null ? [] : [drugId]))),
+      ];
+      if (ids.length > 0) {
+        const names = await workflow.scan('drug', {
+          filters: [{ column: 'drugid', operator: 'in', value: ids }],
+        });
+        for (const source of names) drugNames.set(source.drugid, source.name);
+      }
+    }
+    for (const diagnostic of incompleteMatches) {
+      const name = diagnostic.drugId === null ? undefined : drugNames.get(diagnostic.drugId);
+      if (name !== undefined) diagnostic.drugName = name;
+    }
   }
   if (incompleteMatches.length) notices.push(incompleteResultNotice);
   if (!matched.length && !incompleteMatches.length && !notices.length) notices.push(noMatchNotice);

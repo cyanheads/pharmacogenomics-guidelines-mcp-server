@@ -59,3 +59,9 @@ export function renderLossless(value: unknown, path = '$'): string {
 export function formatLossless(value: unknown): { type: 'text'; text: string }[] {
   return [{ type: 'text', text: renderLossless(value) }];
 }
+
+/** Render enrichment fields with the same lossless format as source records. */
+export const losslessEnrichmentTrailers = {
+  effectiveQuery: { render: (value: unknown) => renderLossless(value, '$.effectiveQuery') },
+  notices: { render: (value: unknown) => renderLossless(value, '$.notices') },
+};

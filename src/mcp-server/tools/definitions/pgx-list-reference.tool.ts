@@ -73,7 +73,7 @@ const staticRows = {
     {
       value: 'recommendation views',
       meaning:
-        'pgx_get_recommendations defaults to view=recommendations. view=test_alerts uses the same selectors to retrieve complete source CDS examples directly, without recommendation or guideline joins. alerts and incompleteAlerts use page and incompletePage independently; items and incompleteMatches remain empty. Ordered alerttext, No CDS and n/a are preserved. Missing genetics never become No Result; explicit source No Result rows remain browsable.',
+        'pgx_get_recommendations defaults to view=recommendations. view=test_alerts uses the same selectors to retrieve complete source CDS examples directly, without recommendation or guideline joins. alerts and incompleteAlerts use page and incompletePage independently; items and incompleteMatches remain empty. In both views incompleteDrugs summarizes all withheld rows by drug before paging. missingGenes names omitted genes and missingAlleles names other required HLA alleles. Ordered alerttext, No CDS and n/a are preserved. Missing genetics never become No Result; explicit source No Result rows remain browsable.',
       sourceUrl: apiUrl,
     },
     {
@@ -103,7 +103,7 @@ const staticRows = {
     {
       value: 'allele and guideline paging',
       meaning:
-        'limit defaults to 25; positive safe integers above 100 clamp to 100 with a notice. Nonpositive, fractional or unsafe limits fail before fetching. The 24,000-byte complete-result soft budget includes both surfaces and enrichment; rows and nested frequencies remain complete. oversizedRow marks one indivisible exception. Follow page.nextOffset, not offset plus limit.',
+        'limit defaults to 25; positive safe integers above 100 clamp to 100 with a notice. Nonpositive, fractional or unsafe limits fail before fetching. Allele and guideline pages retain complete rows. Allele population-frequency view rows are joined only with includePopulationFrequencies=true. Follow page.nextOffset.',
       sourceUrl: apiUrl,
     },
     {
@@ -121,7 +121,7 @@ const staticRows = {
     {
       value: 'recommendation selectors',
       meaning:
-        'pgx_get_recommendations mode=drug requires one drugName or drugId; result filters are phenotype/activityScore with geneSymbol, or geneResults. mode=genotype requires 1–10 explicit gene/diplotype entries. mode=results requires geneResults or geneSymbol with phenotype/activityScore. Genotype/results optionally accept one drug selector. Follow page.nextOffset and incompletePage.nextOffset independently. Omit fields belonging to other modes.',
+        'pgx_get_recommendations mode=drug requires one drugName or drugId; result filters are phenotype/activityScore with geneSymbol, or geneResults. mode=genotype requires up to 25 explicit gene/diplotype entries. PGX_LARGE_GENE_PANELS=false limits both gene maps to 10 entries. mode=results requires geneResults or geneSymbol with phenotype/activityScore. Genotype/results optionally accept one drug selector. Follow page.nextOffset and incompletePage.nextOffset independently. Omit fields belonging to other modes.',
       sourceUrl: apiUrl,
     },
     {

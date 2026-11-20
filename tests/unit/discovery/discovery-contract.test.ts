@@ -84,6 +84,40 @@ const pair = {
   cpiclevel: 'A',
   future: { clinicalText },
 };
+
+function joinedGuidelineSource() {
+  const secondGuideline = { ...guideline, id: 2, url: 'https://example.org/g2' };
+  const secondDrug = { ...drug, drugid: 'D2', guidelineid: null };
+  const rows = new Map<string, Record<string, unknown>[]>([
+    ['guideline', [guideline, secondGuideline]],
+    ['drug', [drug, secondDrug]],
+    [
+      'pair_view',
+      [
+        pair,
+        { ...pair, pairid: 2, guidelineurl: secondGuideline.url },
+        { ...pair, pairid: 3, drugid: secondDrug.drugid, guidelineurl: secondGuideline.url },
+        { ...pair, pairid: 4, drugid: secondDrug.drugid, guidelineurl: secondGuideline.url },
+        { ...pair, pairid: 5, guidelineurl: null },
+        { ...pair, pairid: 6, guidelineurl: 'https://example.org/unmatched' },
+      ],
+    ],
+  ]);
+  const requests = network((url) => {
+    const selected = rows.get(url.pathname.slice('/v1/'.length))!.filter((row) =>
+      [...url.searchParams].every(([key, value]) => {
+        if (value.startsWith('eq.')) return String(row[key]) === value.slice(3);
+        if (value.startsWith('in.('))
+          return JSON.parse(`[${value.slice(4, -1)}]`).includes(row[key]);
+        return true;
+      }),
+    );
+    const offset = Number(url.searchParams.get('offset'));
+    const limit = Number(url.searchParams.get('limit'));
+    return source(selected.slice(offset, offset + limit), selected.length, offset);
+  });
+  return { requests, secondDrug, secondGuideline };
+}
 beforeEach(() => initCpicService());
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -163,6 +197,92 @@ describe('pgx_search_pairs', () => {
 });
 
 describe('pgx_get_guideline', () => {
+  it('unions exact drug relations before paging guideline summaries', async () => {
+    const { secondGuideline } = joinedGuidelineSource();
+    for (const [offset, record] of [guideline, secondGuideline].entries()) {
+      expect(
+        twin(
+          await runToolContract(pgxGetGuideline, {
+            by: 'drug',
+            drugId: 'D1',
+            limit: 1,
+            offset,
+          }),
+        ),
+      ).toMatchObject({
+        found: true,
+        guidelines: [{ record, drugCount: offset + 1 }],
+        page: { total: 2, returned: 1, nextOffset: offset === 0 ? 1 : null },
+      });
+    }
+    expect(
+      twin(await runToolContract(pgxGetGuideline, { by: 'drug', drugId: 'D2' })),
+    ).toMatchObject({
+      found: true,
+      guidelines: [{ record: secondGuideline, drugCount: 2, pairCount: 3 }],
+    });
+  });
+  it('counts canonical drugs once and pages pair-only drugs in stable ID order', async () => {
+    const { secondDrug, secondGuideline, requests } = joinedGuidelineSource();
+    expect(
+      twin(
+        await runToolContract(pgxGetGuideline, {
+          by: 'id',
+          guidelineId: 2,
+          view: 'drugs',
+          limit: 1,
+          offset: 1,
+        }),
+      ),
+    ).toMatchObject({
+      found: true,
+      guidelines: [{ record: secondGuideline, drugCount: 2, pairCount: 3 }],
+      drugs: [secondDrug],
+      page: { total: 2, returned: 1, nextOffset: null },
+    });
+    expect(requests.filter((url) => url.pathname.endsWith('/drug'))).toHaveLength(2);
+  });
+  it('pages direct guideline drugs without changing the descriptor or provenance', async () => {
+    const drugs = [drug, { ...drug, drugid: 'D2' }];
+    network((url) => {
+      const rows = url.pathname.endsWith('/guideline')
+        ? [guideline]
+        : url.pathname.endsWith('/drug')
+          ? drugs
+          : [pair];
+      const offset = Number(url.searchParams.get('offset'));
+      return source(
+        rows.slice(offset, offset + Number(url.searchParams.get('limit'))),
+        rows.length,
+        offset,
+      );
+    });
+    for (const offset of [0, 1, 2]) {
+      const output = twin(
+        await runToolContract(pgxGetGuideline, {
+          by: 'id',
+          guidelineId: 1,
+          view: 'drugs',
+          limit: 1,
+          offset,
+        }),
+      );
+      expect(output).toMatchObject({
+        found: true,
+        guidelines: [{ record: guideline, drugCount: 2, pairCount: 1 }],
+        drugs: drugs.slice(offset, offset + 1),
+        page: { total: 2, returned: offset < 2 ? 1 : 0, nextOffset: offset === 0 ? 1 : null },
+        provenance: {
+          rowVersions: expect.arrayContaining([
+            expect.objectContaining({ path: '/guidelines/0/record', version: guideline.version }),
+            ...(offset < 2
+              ? [expect.objectContaining({ path: '/drugs/0', version: drug.version })]
+              : []),
+          ]),
+        },
+      });
+    }
+  });
   it.each([
     { by: 'id', guidelineId: 1 },
     { by: 'gene', geneSymbol: ' g ' },
@@ -201,30 +321,36 @@ describe('pgx_get_guideline', () => {
       pairid: i,
       guidelineurl: records[i === 101 ? 1 : 0]?.url,
     }));
-    network((url) => {
+    const requests = network((url) => {
+      const ids = url.searchParams.get('guidelineid');
+      const urls = url.searchParams.get('guidelineurl');
       const rows = url.pathname.endsWith('/guideline')
         ? records
         : url.pathname.endsWith('/drug')
-          ? drugs.filter((d) => `eq.${d.guidelineid}` === url.searchParams.get('guidelineid'))
-          : pairs.filter((p) => `eq.${p.guidelineurl}` === url.searchParams.get('guidelineurl'));
+          ? drugs.filter((d) => ids && JSON.parse(`[${ids.slice(4, -1)}]`).includes(d.guidelineid))
+          : pairs.filter(
+              (p) => urls && JSON.parse(`[${urls.slice(4, -1)}]`).includes(p.guidelineurl),
+            );
       const offset = Number(url.searchParams.get('offset'));
-      return source(rows.slice(offset, offset + 101), rows.length, offset);
+      const limit = Number(url.searchParams.get('limit'));
+      return source(rows.slice(offset, offset + limit), rows.length, offset);
     });
     const output = twin(await runToolContract(pgxGetGuideline, { by: 'gene', geneSymbol: 'G' }));
     expect(output.guidelines).toEqual(
       records.map((record) => ({
         record,
-        drugCount: drugs.filter((d) => d.guidelineid === record.id).length,
+        drugCount: record === guideline ? 101 : 2,
         pairCount: pairs.filter((p) => p.guidelineurl === record.url).length,
       })),
     );
+    expect(requests).toHaveLength(5);
   });
   it.each([
     { rows: [] },
     { rows: [{ ...drug, guidelineid: null }] },
     { rows: [drug, { ...drug, drugid: 'D2' }] },
   ])('retains missing/ambiguous drug candidates $rows', async ({ rows }) => {
-    network(() => source(rows));
+    network((url) => source(url.pathname.endsWith('/drug') ? rows : []));
     const output = twin(await runToolContract(pgxGetGuideline, { by: 'drug', drugName: 'Drug' }));
     expect(output).toMatchObject({
       found: false,
@@ -450,8 +576,20 @@ describe('bounded discovery scans', () => {
       });
       const result = await runToolContract(pgxGetGuideline, { by: 'id', guidelineId: 1 });
       expect(result.structuredContent).toMatchObject({
-        error: { data: { reason: 'query_too_broad', cap: 2000 } },
+        error: {
+          data: {
+            reason: 'query_too_broad',
+            cap: 2000,
+            recovery: {
+              hint: pgxGetGuideline.errors?.find((error) => error.reason === 'query_too_broad')
+                ?.recovery,
+            },
+          },
+        },
       });
+      expect(JSON.stringify(result.content)).toContain(
+        pgxGetGuideline.errors?.find((error) => error.reason === 'query_too_broad')?.recovery,
+      );
       expect(JSON.stringify(result.content)).not.toContain('"guidelines"');
     },
   );

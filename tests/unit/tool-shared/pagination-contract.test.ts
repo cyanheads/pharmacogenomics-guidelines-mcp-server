@@ -1,12 +1,11 @@
-/** @fileoverview Complete-result byte budgets at the HTTP/service/formatter seam.
- * @module tests/unit/tool-shared/response-budget.test
+/** @fileoverview Source-page completeness at the HTTP/service/formatter seam.
+ * @module tests/unit/tool-shared/pagination-contract.test
  */
 import { runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { Parser } from 'commonmark';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { pgxGetGuideline } from '@/mcp-server/tools/definitions/pgx-get-guideline.tool.js';
 import { searchAllelesTool } from '@/mcp-server/tools/definitions/search-alleles.tool.js';
-import { completeResult } from '@/mcp-server/tools/shared/response-budget.js';
 import { initCpicService } from '@/services/cpic/cpic-service.js';
 
 beforeEach(() => initCpicService());
@@ -35,7 +34,7 @@ function network(size = 40, text = '東京🧬'.repeat(160), unknown = false) {
     { id: 1, name: 'G', url: `https://example.org/${'long'.repeat(100)}`, version: 3 },
   ];
   const drugs = alleles.map((row) => ({
-    drugid: `D${row.id}`,
+    drugid: `D${String(row.id).padStart(3, '0')}`,
     name: row.name,
     guidelineid: 1,
     version: 1,
@@ -43,7 +42,7 @@ function network(size = 40, text = '東京🧬'.repeat(160), unknown = false) {
   }));
   const pairs = alleles.map((row) => ({
     pairid: row.id,
-    drugid: `D${row.id}`,
+    drugid: `D${String(row.id).padStart(3, '0')}`,
     guidelineurl: guidelines[0]?.url,
     version: 2,
     notes: text,
@@ -84,21 +83,23 @@ function network(size = 40, text = '東京🧬'.repeat(160), unknown = false) {
 
 it('characterizes complete sparse nested frequency rows and real formatter output', async () => {
   const { alleles, frequencies } = network(1, 'source\r\ntext');
-  const result = await runToolContract(searchAllelesTool, { geneSymbol: 'G' });
+  const result = await runToolContract(searchAllelesTool, {
+    geneSymbol: 'G',
+    includePopulationFrequencies: true,
+  });
   expect(result.isError).not.toBe(true);
   expect(assertSurfaces(result).items).toEqual([
     { ...alleles[0], populationFrequencies: frequencies },
   ]);
 });
 
-it('budgets the entire multibyte allele result and advances through unknown totals', async () => {
+it('returns a complete multibyte allele page and advances through unknown totals', async () => {
   network(40, undefined, true);
   const result = await runToolContract(searchAllelesTool, { geneSymbol: 'G', limit: 25 });
   expect(result.isError).not.toBe(true);
-  expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(24000);
   expect(result.structuredContent).toMatchObject({
     truncated: true,
-    page: { total: null, nextOffset: expect.any(Number) },
+    page: { total: null, nextOffset: 25, returned: 25 },
   });
 });
 
@@ -149,9 +150,13 @@ function assertSurfaces(result: Awaited<ReturnType<typeof runToolContract>>) {
         fences.push(JSON.parse(event.node.literal ?? ''));
   }
   expect(fences).toEqual([domain, effectiveQuery, notices]);
-  expect(result).toEqual(
-    completeResult(domain, { effectiveQuery, notices, truncated, shown, cap }),
-  );
+  const trailer = result.content.at(-1);
+  expect(trailer).toMatchObject({ type: 'text' });
+  if (trailer?.type !== 'text') throw new Error('Expected text enrichment');
+  for (const [key, value] of Object.entries({ truncated, shown, cap })) {
+    expect(trailer.text).toContain(`**${key}:** ${String(value)}`);
+  }
+  expect(structured).not.toHaveProperty('oversizedRow');
   const provenance = structured.provenance as {
     rowVersions: { path: string; requestIndex: number; version: number }[];
     requestUrls: string[];
@@ -172,7 +177,7 @@ function assertSurfaces(result: Awaited<ReturnType<typeof runToolContract>>) {
 }
 
 it.each([false, true])(
-  'reconstructs complete nested frequency evidence over repeated budget slices (unknown=%s)',
+  'reconstructs complete nested frequency evidence over repeated pages (unknown=%s)',
   async (unknown) => {
     const { alleles, frequencies } = network(19, '東京🧬'.repeat(160), unknown);
     const recovered: unknown[] = [];
@@ -182,20 +187,19 @@ it.each([false, true])(
       const result = await runToolContract(searchAllelesTool, {
         geneSymbol: 'G',
         limit: 9,
+        includePopulationFrequencies: true,
         offset,
       });
       const output = assertSurfaces(result);
       const page = output.page as { nextOffset: number | null; returned: number };
-      expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(24000);
       expect(output.shown).toBe(page.returned);
       expect(output.truncated).toBe(page.nextOffset !== null);
-      expect(output.oversizedRow).toBe(false);
       recovered.push(...(output.items as unknown[]));
       if (page.nextOffset !== null) expect(page.nextOffset).toBeGreaterThan(offset);
       offset = page.nextOffset;
       if (++pages > 30) throw new Error('Continuation failed to terminate');
     }
-    expect(pages).toBeGreaterThan(3);
+    expect(pages).toBe(3);
     expect(recovered).toEqual(
       alleles.map((row) => ({
         ...row,
@@ -205,24 +209,26 @@ it.each([false, true])(
   },
 );
 
-it('returns one complete oversized allele with an explicit notice and advancing continuation', async () => {
+it('retains all large allele and frequency rows without a byte-budget notice', async () => {
   const { alleles, frequencies } = network(2, '東京🧬'.repeat(1000));
-  const result = await runToolContract(searchAllelesTool, { geneSymbol: 'G' });
+  const result = await runToolContract(searchAllelesTool, {
+    geneSymbol: 'G',
+    includePopulationFrequencies: true,
+  });
   const output = assertSurfaces(result);
   expect(Buffer.byteLength(JSON.stringify(result))).toBeGreaterThan(24000);
   expect(output).toMatchObject({
-    oversizedRow: true,
-    shown: 1,
-    truncated: true,
-    page: { returned: 1, nextOffset: 1 },
+    shown: 2,
+    truncated: false,
+    page: { returned: 2, nextOffset: null },
+    notices: [],
   });
-  expect(output.items).toEqual([
-    {
-      ...alleles[0],
-      populationFrequencies: frequencies.filter((f) => f.name === alleles[0]?.name),
-    },
-  ]);
-  expect(output.notices).toEqual(expect.arrayContaining([expect.stringContaining('indivisible')]));
+  expect(output.items).toEqual(
+    alleles.map((row) => ({
+      ...row,
+      populationFrequencies: frequencies.filter((frequency) => frequency.name === row.name),
+    })),
+  );
 });
 
 it.each(['summary', 'drugs', 'pairs'] as const)(
@@ -242,7 +248,6 @@ it.each(['summary', 'drugs', 'pairs'] as const)(
       });
       const output = assertSurfaces(result),
         page = output.page as { returned: number; nextOffset: number | null; total: number };
-      expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(24000);
       expect(output).not.toHaveProperty(view === 'drugs' ? 'pairs' : 'drugs');
       expect(output.guidelines).toEqual([
         { record: data.guidelines[0], drugCount: 17, pairCount: 17 },
@@ -302,7 +307,6 @@ it.each([0, 1000])('preserves empty and past-end metadata at offset %s', async (
     expect(assertSurfaces(result)).toMatchObject({
       shown: 0,
       truncated: false,
-      oversizedRow: false,
       page: { offset, returned: 0, total: 0, nextOffset: null },
     });
   }
@@ -322,7 +326,6 @@ it('pages ambiguous candidates without duplicate, skipped or split records', asy
     const output = assertSurfaces(result),
       page = output.page as { nextOffset: number | null; returned: number };
     expect(output).toMatchObject({ found: false, guidelines: [], shown: page.returned });
-    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(24000);
     recovered.push(...(output.candidates as unknown[]));
     offset = page.nextOffset;
   }
@@ -338,7 +341,7 @@ it('pages ambiguous candidates without duplicate, skipped or split records', asy
   });
 });
 
-it('uses count-only probes for unselected known-total guideline collections', async () => {
+it('counts distinct drugs and retains the selected known-total pairs page', async () => {
   const { fetch } = network(140, 'small');
   const result = await runToolContract(pgxGetGuideline, {
     by: 'id',
@@ -355,13 +358,17 @@ it('uses count-only probes for unselected known-total guideline collections', as
     page: {
       offset: 100,
       total: 140,
-      returned: output.shown,
-      nextOffset: 100 + Number(output.shown),
+      returned: 40,
+      nextOffset: null,
     },
   });
-  expect(fetch).toHaveBeenCalledTimes(3);
   const urls = fetch.mock.calls.map((call) => new URL(call[0]));
-  expect(urls.find((url) => url.pathname.endsWith('/drug'))?.searchParams.get('limit')).toBe('2');
+  expect(
+    urls
+      .filter((url) => url.pathname.endsWith('/drug'))
+      .at(-1)
+      ?.searchParams.get('offset'),
+  ).toBe('100');
   expect(urls.find((url) => url.pathname.endsWith('/pair_view'))?.searchParams.get('limit')).toBe(
     '101',
   );
@@ -381,62 +388,27 @@ it('counts unknown-total related collections through bounded multi-page scans', 
   expect(output).toMatchObject({
     guidelines: [{ drugCount: 107, pairCount: 107 }],
     drugs: [{ drugid: 'D102' }, { drugid: 'D103' }, { drugid: 'D104' }],
-    page: { offset: 102, returned: 3, total: null, nextOffset: 105 },
+    page: { offset: 102, returned: 3, total: 107, nextOffset: 105 },
   });
 });
 
-it('keeps oversizedRow truthful at the actual serialized envelope threshold', async () => {
-  let low = 1,
-    high = 1500,
-    lastFit = 0;
-  while (low <= high) {
-    const middle = Math.floor((low + high) / 2);
-    network(1, '界'.repeat(middle));
-    const result = await runToolContract(searchAllelesTool, { geneSymbol: 'G', limit: 1 });
-    const output = assertSurfaces(result),
-      bytes = Buffer.byteLength(JSON.stringify(result));
-    if (output.oversizedRow) {
-      expect(bytes).toBeGreaterThan(24000);
-      high = middle - 1;
-    } else {
-      expect(bytes).toBeLessThanOrEqual(24000);
-      lastFit = middle;
-      low = middle + 1;
-    }
-  }
-  expect(lastFit).toBeGreaterThan(0);
-  network(1, '界'.repeat(lastFit + 1));
-  const result = await runToolContract(searchAllelesTool, { geneSymbol: 'G', limit: 1 });
-  expect(assertSurfaces(result).oversizedRow).toBe(true);
-  expect(Buffer.byteLength(JSON.stringify(result))).toBeGreaterThan(24000);
-});
-
-it('preselects fitting alleles before fetching a long hundred-name frequency query', async () => {
-  const requests: URL[] = [];
-  const alleles = Array.from({ length: 100 }, (_, id) => ({
-    id,
-    definitionid: id,
-    genesymbol: 'G',
-    name: `*${id}-${'long'.repeat(70)}`,
-  }));
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async (input: string) => {
-      const url = new URL(input);
-      requests.push(url);
-      if (url.pathname.endsWith('/allele'))
-        return Response.json(alleles, { headers: { 'content-range': '0-99/100' } });
-      return Response.json([], { headers: { 'content-range': '*/0' } });
-    }),
-  );
-  const result = await runToolContract(searchAllelesTool, { geneSymbol: 'G', limit: 101 });
-  expect(assertSurfaces(result)).toMatchObject({ oversizedRow: false, cap: 100, truncated: true });
-  expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(24000);
-  const frequency = requests.find((url) => url.pathname.endsWith('/population_frequency_view'));
-  expect(frequency?.searchParams.get('name')).not.toContain(alleles.at(-1)?.name);
-  expect(
-    (result.structuredContent as { provenance: { requestUrls: string[] } }).provenance.requestUrls,
-  ).toEqual([...new Set(requests.map((url) => url.href))]);
+it('records real provenance and omits joins when the flag is explicitly false', async () => {
+  const { alleles, fetch } = network(100);
+  const result = await runToolContract(searchAllelesTool, {
+    geneSymbol: 'G',
+    limit: 101,
+    includePopulationFrequencies: false,
+  });
+  const output = assertSurfaces(result);
+  expect(output).toMatchObject({
+    cap: 100,
+    shown: 100,
+    truncated: false,
+    effectiveQuery: { includePopulationFrequencies: false },
+  });
+  expect(output.items).toEqual(alleles);
+  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(output.provenance).toMatchObject({ requestUrls: fetch.mock.calls.map(([url]) => url) });
 });
 
 it.each([false, true])(
@@ -479,7 +451,6 @@ it.each([false, true])(
       });
       const output = assertSurfaces(result),
         page = output.page as { nextOffset: number | null };
-      expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(24000);
       recovered.push(...(output.guidelines as unknown[]));
       if (page.nextOffset !== null) expect(page.nextOffset).toBeGreaterThan(offset);
       offset = page.nextOffset;
@@ -487,5 +458,74 @@ it.each([false, true])(
     }
     expect(pages).toBeGreaterThan(2);
     expect(recovered).toEqual(records.map((record) => ({ record, drugCount: 0, pairCount: 0 })));
+  },
+);
+
+it.each([25, 100])('fills allele pages of %i and recovers every source row', async (limit) => {
+  const { alleles, fetch } = network(208);
+  const recovered: unknown[] = [];
+  let offset: number | null = 0;
+  let pages = 0;
+  while (offset !== null) {
+    const result = await runToolContract(searchAllelesTool, { geneSymbol: 'G', limit, offset });
+    const output = assertSurfaces(result);
+    const page = output.page as { returned: number; nextOffset: number | null };
+    expect(output.items).toEqual(alleles.slice(offset, offset + limit));
+    expect(output.effectiveQuery).toMatchObject({ includePopulationFrequencies: false });
+    expect(page.returned).toBe(Math.min(limit, alleles.length - offset));
+    recovered.push(...(output.items as unknown[]));
+    offset = page.nextOffset;
+    if (++pages > Math.ceil(alleles.length / limit))
+      throw new Error('Continuation did not terminate');
+  }
+  expect(recovered).toEqual(alleles);
+  expect(fetch.mock.calls.every(([url]) => new URL(url).pathname.endsWith('/allele'))).toBe(true);
+});
+
+it('returns a complete guideline pairs page above the former byte budget', async () => {
+  const { pairs } = network(33);
+  const output = assertSurfaces(
+    await runToolContract(pgxGetGuideline, { by: 'id', guidelineId: 1, view: 'pairs', limit: 100 }),
+  );
+  expect(output).toMatchObject({ pairs, page: { returned: 33, nextOffset: null }, notices: [] });
+});
+
+it.each(['summary', 'drugs', 'pairs', 'candidates'] as const)(
+  'reports past-end offset for %s',
+  async (view) => {
+    network(17);
+    const input =
+      view === 'candidates'
+        ? { by: 'drug' as const, drugName: 'ambiguous' }
+        : { by: 'id' as const, guidelineId: 1, view };
+    const output = assertSurfaces(await runToolContract(pgxGetGuideline, { ...input, offset: 99 }));
+    expect(output.page).toMatchObject({ returned: 0, total: view === 'summary' ? 1 : 17 });
+    expect(output.notices).toContain(
+      `Offset 99 is past the last row (total ${view === 'summary' ? 1 : 17}); retry with a smaller offset.`,
+    );
+    if (view === 'candidates')
+      expect(output.notices).toContain('Retry pgx_get_guideline with one candidate drugId.');
+  },
+);
+
+it.each([false, true])(
+  'keeps the no-coverage guidance for an empty summary (unknown=%s)',
+  async (unknown) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        Response.json([], {
+          headers: unknown ? {} : { 'content-range': '*/0' },
+        }),
+      ),
+    );
+    const output = assertSurfaces(
+      await runToolContract(pgxGetGuideline, { by: 'gene', geneSymbol: 'G', offset: 99 }),
+    );
+    expect(output).toMatchObject({
+      found: false,
+      page: { total: unknown ? null : 0, returned: 0, nextOffset: null },
+      notices: ['Call pgx_search_pairs to find a gene or drug and its guideline coverage.'],
+    });
   },
 );

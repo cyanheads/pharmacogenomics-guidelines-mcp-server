@@ -156,7 +156,11 @@ it('retains HLA allele identity and rejects unsupported result kinds', async () 
       view: 'test_alerts',
       geneResults: { 'HLA-B': { kind: 'alleleStatus', value: '*15:02 positive' } },
     }),
-  ).toMatchObject({ alerts: [], status: 'no_match' });
+  ).toMatchObject({
+    alerts: [],
+    status: 'incomplete',
+    incompleteAlerts: [{ missingAlleles: [{ geneSymbol: 'HLA-B', allele: '*57:01' }] }],
+  });
   await failure(
     {
       mode: 'results',
@@ -176,6 +180,7 @@ it('characterizes the default response without an injected view or alert fields'
     'clinicalCaveat',
     'effectiveQuery',
     'geneResolutions',
+    'incompleteDrugs',
     'incompleteMatches',
     'incompletePage',
     'items',

@@ -12,15 +12,8 @@ import {
   provenanceSchema,
   searchAlleles,
 } from '@/services/cpic/index.js';
-import { formatLossless } from '../shared/lossless-renderer.js';
+import { formatLossless, losslessEnrichmentTrailers } from '../shared/lossless-renderer.js';
 import {
-  budgetNotices,
-  budgetResponse,
-  budgetTrailers,
-  slicedPage,
-} from '../shared/response-budget.js';
-import {
-  budgetPaginationFields,
   cappedEnrichmentFields,
   geneSymbolSchema,
   optionalText,
@@ -40,6 +33,9 @@ const effectiveQuerySchema = z
       .string()
       .optional()
       .describe('Trimmed case-insensitive literal clinical functional status.'),
+    includePopulationFrequencies: z
+      .boolean()
+      .describe('Whether complete population-frequency evidence was requested.'),
     ...paginationFields,
   })
   .describe('Effective allele selectors and page bounds.');
@@ -47,7 +43,7 @@ const effectiveQuerySchema = z
 export const searchAllelesTool = tool('pgx_search_alleles', {
   title: 'Search alleles',
   description:
-    'Inspect CPIC allele function, evidence, definition metadata and complete population frequencies for geneSymbol. Name matches literally first, then a matching gene prefix before a star allele may be removed; clinicalFunctionalStatus matches literal text case-insensitively. Discover genes with pgx_list_reference. Definitions are metadata, not variant interpretation. Frequencies are source fractions; inferred frequencies are not observations and do not establish individual risk. Pages have a 24,000-byte complete-result soft budget; an indivisible exception sets oversizedRow. Continue with page.nextOffset.',
+    'Inspect CPIC allele function, evidence and definition metadata for geneSymbol. Set includePopulationFrequencies=true to join complete source frequencies. Name matches literally first, then a matching gene prefix before a star allele may be removed; clinicalFunctionalStatus matches literal text case-insensitively. Discover genes with pgx_list_reference. Definitions are metadata, not variant interpretation. Frequencies are source fractions; inferred frequencies are not observations and do not establish individual risk. Continue with page.nextOffset.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     geneSymbol: geneSymbolSchema,
@@ -56,26 +52,32 @@ export const searchAllelesTool = tool('pgx_search_alleles', {
       100,
       'Case-insensitive literal source clinical functional status; blank means unset.',
     ),
-    ...budgetPaginationFields,
+    includePopulationFrequencies: z
+      .boolean()
+      .default(false)
+      .describe('Join complete population-frequency evidence for the returned alleles.'),
+    ...paginationFields,
   }),
   output: z.object({
-    oversizedRow: z
-      .boolean()
-      .describe('Whether one complete indivisible row exceeds the soft byte budget.'),
     items: z
       .array(
         AlleleSchema.extend({
           populationFrequencies: z
             .array(PopulationFrequencySchema)
-            .describe('Complete matching population-frequency rows; empty when unavailable.'),
-        }).describe('Source allele with population-frequency evidence.'),
+            .optional()
+            .describe(
+              'Complete matching population-frequency rows when requested; empty when unavailable.',
+            ),
+        }).describe('Source allele with optional population-frequency evidence.'),
       )
-      .describe('Source alleles, embedded definitions and population frequencies.'),
+      .describe(
+        'Complete source allele rows, embedded definitions and requested population frequencies.',
+      ),
     page: pageSchema,
     provenance: provenanceSchema,
   }),
   enrichment: { effectiveQuery: effectiveQuerySchema, ...cappedEnrichmentFields },
-  enrichmentTrailer: budgetTrailers,
+  enrichmentTrailer: losslessEnrichmentTrailers,
   errors: [
     {
       reason: 'invalid_selector',
@@ -128,40 +130,12 @@ export const searchAllelesTool = tool('pgx_search_alleles', {
       geneSymbol,
       ...(name !== undefined && { name }),
       ...(clinicalFunctionalStatus !== undefined && { clinicalFunctionalStatus }),
+      includePopulationFrequencies: input.includePopulationFrequencies,
       limit: Math.min(input.limit, 100),
       offset: input.offset,
     };
     return getCpicService().workflow(ctx, async (workflow) => {
-      const { effectiveName, budgetTrimmed, ...result } = await searchAlleles(
-        workflow,
-        effectiveQuery,
-        (rows, page, frequencyUrls) =>
-          budgetResponse(rows.length, (count, oversizedRow, trimmed) => {
-            const domain = {
-              oversizedRow,
-              items: rows
-                .slice(0, count)
-                .map((row) => workflow.join(row, { populationFrequencies: [] })),
-              page: slicedPage(page, count),
-              provenance: workflow.provenance(),
-            };
-            domain.provenance = workflow.provenance(domain);
-            domain.provenance.requestUrls.push(...frequencyUrls(count));
-            return {
-              domain,
-              enrichment: {
-                effectiveQuery,
-                notices: [
-                  ...(input.limit > 100 ? ['Requested limit clamped to the 100-row cap.'] : []),
-                  ...budgetNotices(oversizedRow, trimmed),
-                ],
-                truncated: domain.page.nextOffset !== null,
-                shown: count,
-                cap: effectiveQuery.limit,
-              },
-            };
-          }).domain.items.length,
-      );
+      const { effectiveName, ...result } = await searchAlleles(workflow, effectiveQuery);
       if (effectiveName !== undefined) effectiveQuery.name = effectiveName;
       const suppliedFilters = [
         name !== undefined ? 'name' : '',
@@ -175,31 +149,17 @@ export const searchAllelesTool = tool('pgx_search_alleles', {
               `No alleles matched. Call pgx_list_reference with topic genes to check gene coverage${suppliedFilters.length ? `, or remove the supplied ${suppliedFilters.join(' and ')} filter${suppliedFilters.length > 1 ? 's' : ''} in pgx_search_alleles` : ''}.`,
             ),
           ];
-      const selected = budgetResponse(result.items.length, (count, oversizedRow, trimmed) => {
-        const domain = {
-          ...result,
-          items: result.items.slice(0, count),
-          page: slicedPage(result.page, count),
-          oversizedRow,
-        };
-        domain.provenance = workflow.provenance(domain);
-        return {
-          domain,
-          enrichment: {
-            effectiveQuery,
-            notices: [
-              ...notices,
-              ...(input.limit > 100 ? ['Requested limit clamped to the 100-row cap.'] : []),
-              ...budgetNotices(oversizedRow, trimmed || budgetTrimmed),
-            ],
-            truncated: domain.page.nextOffset !== null,
-            shown: count,
-            cap: effectiveQuery.limit,
-          },
-        };
+      ctx.enrich({
+        effectiveQuery,
+        notices: [
+          ...notices,
+          ...(input.limit > 100 ? ['Requested limit clamped to the 100-row cap.'] : []),
+        ],
+        truncated: result.page.nextOffset !== null,
+        shown: result.page.returned,
+        cap: effectiveQuery.limit,
       });
-      ctx.enrich(selected.enrichment);
-      return selected.domain;
+      return result;
     });
   },
   format: formatLossless,

@@ -19,13 +19,15 @@ export const endpointColumns = {
     'usedforrecommendation',
   ],
   drug: ['drugid', 'name', 'rxnormid', 'atcid', 'guidelineid'],
-  guideline: ['id', 'genes'],
+  guideline: ['id', 'genes', 'url'],
   gene: ['symbol'],
   gene_result: ['id', 'genesymbol', 'result', 'activityscore'],
   diplotype: ['genesymbol', 'diplotype'],
   recommendation: [
     'id',
     'lookupkey',
+    'lookupkey->>HLA-A',
+    'lookupkey->>HLA-B',
     'drugid',
     'guidelineid',
     'phenotypes',
@@ -38,6 +40,8 @@ export const endpointColumns = {
     'drugid',
     'phenotype',
     'lookupkey',
+    'lookupkey->>HLA-A',
+    'lookupkey->>HLA-B',
     'activityscore',
     'allelestatus',
     'population',
@@ -65,6 +69,7 @@ export type CpicFilter = { column: string } & (
   | { operator: 'substring' | 'iexact'; value: string }
   | { operator: 'in'; value: readonly (string | number)[] }
   | { operator: 'contains'; value: readonly string[] | Record<string, string> }
+  | { operator: 'isNotNull'; column: 'lookupkey->>HLA-A' | 'lookupkey->>HLA-B' }
 );
 /** Internal query arguments; the endpoint fixes select and stable ordering. */
 export interface CpicQuery {
@@ -95,6 +100,8 @@ function expression(filter: CpicFilter): string {
       return `in.(${filter.value.map((value) => (typeof value === 'string' ? quoteLiteral(value) : value)).join(',')})`;
     case 'contains':
       return `cs.${Array.isArray(filter.value) ? `{${filter.value.map(quoteLiteral).join(',')}}` : JSON.stringify(filter.value)}`;
+    case 'isNotNull':
+      return 'not.is.null';
   }
 }
 

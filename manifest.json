@@ -21,7 +21,8 @@
       "env": {
         "MCP_TRANSPORT_TYPE": "stdio",
         "MCP_AUTH_MODE": "none",
-        "NODE_ENV": "production"
+        "NODE_ENV": "production",
+        "PGX_LARGE_GENE_PANELS": "${user_config.large_gene_panels}"
       }
     }
   },
@@ -30,5 +31,12 @@
   },
   "tools_generated": true,
   "prompts_generated": true,
-  "user_config": {}
+  "user_config": {
+    "large_gene_panels": {
+      "type": "boolean",
+      "title": "Allow large gene panels",
+      "description": "Accept up to 25 genes per map. Disable to limit maps to 10 genes.",
+      "default": true
+    }
+  }
 }

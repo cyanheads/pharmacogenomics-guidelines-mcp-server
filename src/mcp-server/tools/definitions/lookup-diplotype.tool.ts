@@ -10,7 +10,7 @@ import {
   provenanceSchema,
   resolveDiplotype,
 } from '@/services/cpic/index.js';
-import { formatLossless, renderLossless } from '../shared/lossless-renderer.js';
+import { formatLossless, losslessEnrichmentTrailers } from '../shared/lossless-renderer.js';
 import { geneSymbolSchema, sharedEnrichmentFields } from '../shared/schemas.js';
 
 const effectiveQuerySchema = z
@@ -23,7 +23,7 @@ const effectiveQuerySchema = z
 export const lookupDiplotypeTool = tool('pgx_lookup_diplotype', {
   title: 'Look up diplotype',
   description:
-    'Translate a CPIC-supported diplotype or allele-status result for one gene. Supply geneSymbol and exact diplotype notation, including star alleles, named HLA positive/negative statuses, or non-star sequences; use pgx_search_alleles and pgx_list_reference with topic phenotypes to inspect supported values. Exact lookup precedes bounded reverse-order or status aliases. Multiple source rows remain ambiguous; no activity score or missing gene result is inferred.',
+    'Translate a CPIC-supported diplotype or allele-status result for one gene. Supply geneSymbol and exact diplotype notation, including star alleles, named HLA positive/negative statuses, or non-star sequences; use pgx_search_alleles and pgx_list_reference with topic phenotypes to inspect supported values. Exact lookup precedes normalization of spaces around the slash, matching gene prefixes, and then reverse order. Named HLA statuses also accept case-insensitive positive and negative. Multiple source rows remain ambiguous; no activity score or missing gene result is inferred.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     geneSymbol: geneSymbolSchema,
@@ -47,10 +47,7 @@ export const lookupDiplotypeTool = tool('pgx_lookup_diplotype', {
     provenance: provenanceSchema,
   }),
   enrichment: { effectiveQuery: effectiveQuerySchema, ...sharedEnrichmentFields },
-  enrichmentTrailer: {
-    effectiveQuery: { render: (value) => renderLossless(value, '$.effectiveQuery') },
-    notices: { render: (value) => renderLossless(value, '$.notices') },
-  },
+  enrichmentTrailer: losslessEnrichmentTrailers,
   errors: [
     {
       reason: 'invalid_selector',

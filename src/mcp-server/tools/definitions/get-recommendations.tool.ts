@@ -4,6 +4,8 @@
  */
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { createCounter } from '@cyanheads/mcp-ts-core/utils';
+import { getServerConfig } from '@/config/server-config.js';
 import {
   DiplotypeSchema,
   type ExplicitGeneResult,
@@ -23,6 +25,12 @@ import {
   pageSchema,
   recommendationPaginationFields,
 } from '../shared/schemas.js';
+
+const largePanels = createCounter(
+  'pgx.large_gene_panels',
+  'Accepted gene maps above ten entries',
+  '{panels}',
+);
 
 const resultValue = z
   .string()
@@ -95,7 +103,7 @@ const inputSchema = z.object({
     )
     .optional()
     .describe(
-      'Explicit results for 1–10 genes; excludes scalar geneSymbol, phenotype, activityScore and genotype.',
+      'Explicit results for 1–25 genes (10 when large panels are disabled); excludes scalar geneSymbol, phenotype, activityScore and genotype.',
     ),
   genotype: z
     .record(
@@ -108,7 +116,7 @@ const inputSchema = z.object({
     )
     .optional()
     .describe(
-      'Required in genotype mode: 1–10 explicit gene/diplotype entries. Every entry must resolve uniquely before lookup.',
+      'Required in genotype mode: up to 25 explicit gene/diplotype entries. Every entry must resolve uniquely before lookup.',
     ),
   population: optionalTextSchema(
     200,
@@ -147,11 +155,29 @@ const resolutionSchema = z
   })
   .describe('Source resolution of one explicitly supplied genotype.');
 
+const incompleteRequirements = {
+  drugName: z.string().optional().describe('Exact source drug name when available.'),
+  missingGenes: z
+    .array(z.string().describe('An explicitly required gene.'))
+    .describe('Required genes that were omitted; no default result is assumed.'),
+  missingAlleles: z
+    .array(
+      z
+        .object({
+          geneSymbol: z.string().describe('Source HLA gene symbol.'),
+          allele: z.string().describe('Named HLA allele whose status is required.'),
+        })
+        .describe('One unresolved allele-specific requirement.'),
+    )
+    .optional()
+    .describe('Required HLA allele statuses left unknown by results for other alleles.'),
+};
+
 /** Retrieve complete source records only after all matched genetic prerequisites are explicit. */
 export const getRecommendationsTool = tool('pgx_get_recommendations', {
   title: 'Get recommendations',
   description:
-    'Browse CPIC recommendations in drug mode with one exact drugName or drugId. Match across drugs in results mode with geneResults or geneSymbol plus phenotype/activityScore, or genotype mode with 1–10 uniquely resolved gene/diplotype entries. Both matching modes accept an optional drug. Optional view=test_alerts selects complete example CDS alerts instead of recommendations, without joins; default view=recommendations. Alert records retain ordered alerttext, No CDS and n/a. Use pgx_list_reference topic phenotypes for source values. Every matched prerequisite must be explicit; omitted genes are never normal, negative or No Result. Preserve populations, scores, classifications and source text. Follow page.nextOffset and incompletePage.nextOffset independently for the selected collection and missing-gene diagnostics; consult source guidelines before clinical use.',
+    'Browse CPIC recommendations in drug mode with one exact drugName or drugId. Match across drugs in results mode with geneResults or geneSymbol plus phenotype/activityScore, or genotype mode with up to 25 uniquely resolved gene/diplotype entries. Both matching modes accept an optional drug. Optional view=test_alerts selects complete example CDS alerts instead of recommendations; default view=recommendations. Alert records retain ordered alerttext, No CDS and n/a. Use pgx_list_reference topic phenotypes for source values. Every matched prerequisite must be explicit; omitted results are never normal, negative or No Result. Preserve populations, scores, classifications and source text. Read incompleteDrugs for missing prerequisites across all withheld rows. Follow page.nextOffset and incompletePage.nextOffset independently for complete records and per-row diagnostics; consult source guidelines before clinical use.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: inputSchema,
   output: z.object({
@@ -177,9 +203,7 @@ export const getRecommendationsTool = tool('pgx_get_recommendations', {
           .object({
             testAlertId: z.number().int().describe('Source test-alert identifier.'),
             drugId: z.string().nullable().describe('Source drug identifier, or null.'),
-            missingGenes: z
-              .array(z.string().describe('An explicitly required gene.'))
-              .describe('Missing source prerequisites; alert text is withheld.'),
+            ...incompleteRequirements,
           })
           .describe('Unmatched alert requiring additional explicit results.'),
       )
@@ -191,15 +215,28 @@ export const getRecommendationsTool = tool('pgx_get_recommendations', {
           .object({
             recommendationId: z.number().int().describe('Source recommendation identifier.'),
             drugId: z.string().nullable().describe('Source drug identifier, or null.'),
-            missingGenes: z
-              .array(z.string().describe('An explicitly required gene.'))
-              .describe('Missing gene results; no default result is assumed.'),
+            ...incompleteRequirements,
           })
           .describe('Recommendation requiring additional explicit gene results.'),
       )
       .describe(
         'Reference possibilities requiring additional results; never matched prescribing advice.',
       ),
+    incompleteDrugs: z
+      .array(
+        z
+          .object({
+            drugId: z.string().describe('Exact source drug identifier.'),
+            ...incompleteRequirements,
+            rowCount: z
+              .number()
+              .int()
+              .positive()
+              .describe('Number of withheld rows for this drug.'),
+          })
+          .describe('Summary of withheld rows for one drug.'),
+      )
+      .describe('Unpaged union of missing prerequisites by drug across the selected view.'),
     geneResolutions: z
       .array(resolutionSchema)
       .describe('Per-gene genotype diagnostics, including ambiguity and source records.'),
@@ -293,8 +330,12 @@ export const getRecommendationsTool = tool('pgx_get_recommendations', {
     ): Record<string, T> | undefined {
       if (map === undefined) return undefined;
       const entries = Object.entries(map);
-      if (entries.length < 1 || entries.length > 10)
-        throw ctx.fail('invalid_selector', `${name} has ${entries.length} entries; supply 1–10.`);
+      const limit = getServerConfig().largeGenePanels ? 25 : 10;
+      if (entries.length < 1 || entries.length > limit)
+        throw ctx.fail(
+          'invalid_selector',
+          `${name} has ${entries.length} entries; supply 1–${limit}.`,
+        );
       const normalized: Record<string, T> = Object.create(null);
       for (const [index, [key, value]] of entries.entries()) {
         const gene = key.trim().toUpperCase();
@@ -376,6 +417,14 @@ export const getRecommendationsTool = tool('pgx_get_recommendations', {
         'invalid_selector',
         'Results mode requires geneResults or geneSymbol with one phenotype or activityScore.',
       );
+    const mapName = genotype ? 'genotype' : 'geneResults';
+    const panel = genotype ?? geneResults;
+    const entryCount = panel ? Object.keys(panel).length : 0;
+    if (entryCount > 10) {
+      const dimensions = { mapName, entryCount };
+      ctx.log.info('Accepted large gene panel', dimensions);
+      largePanels.add(1, dimensions);
+    }
     const effectiveQuery: RecommendationQuery = {
       mode: input.mode,
       ...(input.view !== undefined && { view: input.view }),

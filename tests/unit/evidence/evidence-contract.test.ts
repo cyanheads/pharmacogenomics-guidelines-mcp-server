@@ -88,7 +88,7 @@ describe('pgx_lookup_diplotype contract', () => {
     diplotypekey: { CYP2C19: { '*1': 1, '*2': 1 } },
     lookupkey: { CYP2C19: 'Intermediate Metabolizer' },
   };
-  it.each(['*1/*2', '*2/*1', 'CYP2C19 *2/*1'])(
+  it.each(['*1/*2', '*2/*1', 'CYP2C19 *2/*1', '*1 / *2', 'cyp2c19*1/CYP2C19*2'])(
     'resolves %s while preserving source slot assignments',
     async (diplotype) => {
       const attempted: string[] = [];
@@ -147,6 +147,35 @@ describe('pgx_lookup_diplotype contract', () => {
     );
     expect(output).toMatchObject({ found: true, matchedDiplotype: notation, records: [record] });
   });
+  it.each([
+    ['CYP2C19*1/CYP2C19*2', ['CYP2C19*1/CYP2C19*2', '*1/*2', '*2/*1']],
+    ['*1 / *1', ['*1 / *1', '*1/*1']],
+    ['OTHER*1/CYP2C19*2', ['OTHER*1/CYP2C19*2', 'OTHER*1/*2', '*2/OTHER*1']],
+  ] as const)('tries each distinct spelling in order for %s', async (diplotype, attempts) => {
+    const seen: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        seen.push(new URL(url).searchParams.get('diplotype')?.slice(3) ?? '');
+        return source([]);
+      }),
+    );
+    const output = assertTwin(
+      await runToolContract(lookupDiplotypeTool, { geneSymbol: 'CYP2C19', diplotype }),
+    );
+    expect(output).toMatchObject({ found: false, matchedDiplotype: null });
+    expect(seen).toEqual(attempts);
+  });
+  it('retains exact source notation before treating it as an alias', async () => {
+    const diplotype = 'CYP2C19*1/CYP2C19*2';
+    const exact = { ...row, diplotype };
+    const fetch = vi.fn(async () => source([exact]));
+    vi.stubGlobal('fetch', fetch);
+    expect(
+      assertTwin(await runToolContract(lookupDiplotypeTool, { geneSymbol: 'CYP2C19', diplotype })),
+    ).toMatchObject({ found: true, matchedDiplotype: diplotype, records: [exact] });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
   it.each([0, 2])('retains missing or ambiguous source results (%i records)', async (count) => {
     const rows = Array.from({ length: count }, (_, index) => ({
       ...row,
@@ -199,6 +228,7 @@ describe('pgx_search_alleles contract', () => {
         geneSymbol: 'CYP2C19',
         name,
         clinicalFunctionalStatus: 'no function (a+b)',
+        includePopulationFrequencies: true,
       }),
     );
     expect(output.items).toEqual([{ ...record, populationFrequencies: [] }]);
@@ -227,7 +257,11 @@ describe('pgx_search_alleles contract', () => {
     );
     vi.stubGlobal('fetch', fetch);
     const output = assertTwin(
-      await runToolContract(searchAllelesTool, { geneSymbol: 'G', name: 'G*1' }),
+      await runToolContract(searchAllelesTool, {
+        geneSymbol: 'G',
+        name: 'G*1',
+        includePopulationFrequencies: true,
+      }),
     );
     expect(output.items).toEqual([{ ...record, populationFrequencies: [] }]);
     expect(output.effectiveQuery).toMatchObject({ name: 'G*1' });
@@ -282,7 +316,11 @@ describe('pgx_search_alleles contract', () => {
       ),
     );
     const output = assertTwin(
-      await runToolContract(searchAllelesTool, { geneSymbol: 'G', clinicalFunctionalStatus: ' ' }),
+      await runToolContract(searchAllelesTool, {
+        geneSymbol: 'G',
+        clinicalFunctionalStatus: ' ',
+        includePopulationFrequencies: true,
+      }),
     );
     expect(output.items).toEqual([
       { ...rows[0], populationFrequencies: [frequency] },
@@ -329,6 +367,7 @@ describe('pgx_search_alleles contract', () => {
       await runToolContract(searchAllelesTool, {
         geneSymbol: ' cyp2c19 ',
         name: ' *2 ',
+        includePopulationFrequencies: true,
         clinicalFunctionalStatus: ' ',
       }),
     );
@@ -371,7 +410,7 @@ describe('pgx_search_alleles contract', () => {
     ]);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
-  it('respects the public cap and byte budget with a valid continuation', async () => {
+  it('respects the public cap with a valid continuation', async () => {
     const rows = Array.from({ length: 101 }, (_, index) => ({
       ...allele,
       id: index + 1,
@@ -388,12 +427,11 @@ describe('pgx_search_alleles contract', () => {
     );
     expect(output).toMatchObject({
       cap: 100,
-      shown: expect.any(Number),
+      shown: 100,
       truncated: true,
-      page: { returned: output.shown, nextOffset: output.shown },
+      page: { returned: 100, nextOffset: 100 },
     });
     expect(output.items).toHaveLength(output.shown as number);
-    expect(output.shown).toBeLessThanOrEqual(100);
     expect(searchAllelesTool.input.safeParse({ geneSymbol: 'CYP2C19', offset: 100 }).success).toBe(
       true,
     );
@@ -416,7 +454,10 @@ describe('pgx_search_alleles contract', () => {
         );
       }),
     );
-    const result = await runToolContract(searchAllelesTool, { geneSymbol: 'CYP2C19' });
+    const result = await runToolContract(searchAllelesTool, {
+      geneSymbol: 'CYP2C19',
+      includePopulationFrequencies: true,
+    });
     expect(result.isError).toBe(true);
     expect(result.structuredContent).toMatchObject({
       error: { data: { reason: 'query_too_broad', cap: 2000 } },
@@ -427,7 +468,7 @@ describe('pgx_search_alleles contract', () => {
 
 describe.each([
   { tool: lookupDiplotypeTool, input: { geneSymbol: 'CYP2C19', diplotype: '*1/*2' } },
-  { tool: searchAllelesTool, input: { geneSymbol: 'CYP2C19' } },
+  { tool: searchAllelesTool, input: { geneSymbol: 'CYP2C19', includePopulationFrequencies: true } },
 ])('$tool.name declared errors', ({ tool, input }) => {
   it.each([
     ['invalid_selector', 0],

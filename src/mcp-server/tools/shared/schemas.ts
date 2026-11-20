@@ -81,9 +81,6 @@ export const recommendationPaginationFields = {
     ),
 };
 
-/** Allele and guideline callers may request any safe positive limit; handlers clamp to 100. */
-export const budgetPaginationFields = paginationFields;
-
 /** Public page metadata preserves unknown counts and past-end offsets. */
 export const pageSchema = z
   .object({

@@ -11,6 +11,7 @@ import type {
   Gene,
   GeneResult,
   Guideline,
+  Pair,
   Recommendation,
 } from '@/services/cpic/records.js';
 
@@ -88,6 +89,7 @@ export interface Dataset {
   drugs?: unknown[];
   genes?: Gene[];
   guidelines?: (Guideline | null | undefined)[];
+  pairs?: Pair[];
   recommendations?: Recommendation[];
   references?: GeneResult[];
   rpc?: unknown[];
@@ -123,6 +125,9 @@ export function upstream(data: Dataset) {
       case 'guideline':
         rows = data.guidelines ?? [];
         break;
+      case 'pair_view':
+        rows = data.pairs ?? [];
+        break;
       case 'drug':
         rows = data.drugs ?? [recommendation().drug];
         break;
@@ -145,6 +150,11 @@ export function upstream(data: Dataset) {
     rows = rows.filter((row) => {
       const record = row as Record<string, unknown>;
       for (const [key, value] of url.searchParams) {
+        if (value === 'not.is.null') {
+          const [column, member] = key.split('->>');
+          const object = record[column ?? ''] as Record<string, unknown> | undefined;
+          if (member === undefined || object?.[member] == null) return false;
+        }
         if (value.startsWith('cs.')) {
           const contained = JSON.parse(value.slice(3)) as Record<string, string>;
           const actual = record[key] as Record<string, string> | undefined;

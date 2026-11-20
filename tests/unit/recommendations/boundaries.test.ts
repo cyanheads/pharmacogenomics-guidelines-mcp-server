@@ -7,7 +7,7 @@ import { runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getRecommendationsTool } from '@/mcp-server/tools/definitions/get-recommendations.tool.js';
 import { initCpicService } from '@/services/cpic/cpic-service.js';
-import { failure, recommendation, reference, success, upstream } from './fixtures.js';
+import { diplotype, failure, recommendation, reference, success, upstream } from './fixtures.js';
 
 beforeEach(() => initCpicService());
 afterEach(() => {
@@ -16,6 +16,30 @@ afterEach(() => {
 });
 
 describe('recommendation selector boundaries', () => {
+  it.each([11, 25])(
+    'accepts %i genes in either panel without losing multi-gene matches',
+    async (size) => {
+      const genes = Array.from({ length: size }, (_, i) => `G${i}`);
+      const row = recommendation(1, { G0: 'Normal', G10: 'Normal' });
+      upstream({
+        references: genes.map((gene) => reference(gene, 'Normal')),
+        diplotypes: genes.map((gene) => diplotype(gene)),
+        recommendations: [row],
+        rpc: [{ recommendationid: 1 }],
+      });
+      const genotype = Object.fromEntries(genes.map((gene) => [gene, '*1/*2']));
+      const geneResults = Object.fromEntries(
+        genes.map((gene) => [gene, { kind: 'phenotype' as const, value: 'Normal' }]),
+      );
+      for (const input of [
+        { mode: 'genotype' as const, genotype },
+        { mode: 'results' as const, geneResults },
+      ]) {
+        const result = await success(input);
+        expect(result).toMatchObject({ status: 'matched', items: [row], incompleteMatches: [] });
+      }
+    },
+  );
   it.each([
     { mode: 'drug' as const },
     { mode: 'drug' as const, drugName: ' ', drugId: '' },
@@ -56,7 +80,7 @@ describe('recommendation selector boundaries', () => {
     { mode: 'genotype' as const, genotype: { G: '*1/*1' }, geneSymbol: 'G' },
     {
       mode: 'genotype' as const,
-      genotype: Object.fromEntries(Array.from({ length: 11 }, (_, i) => [`G${i}`, '*1/*1'])),
+      genotype: Object.fromEntries(Array.from({ length: 26 }, (_, i) => [`G${i}`, '*1/*1'])),
     },
   ])('rejects conflicting/empty selectors before fetch: %j', async (input) => {
     const fetch = vi.fn();

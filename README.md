@@ -64,7 +64,7 @@ Clinical pharmacogenomics evidence from the public [CPIC Database API](https://a
   - `by: "gene"` with `geneSymbol`
   - `by: "drug"` with exactly one of `drugName` (exact, case-insensitive) or `drugId`
 - Default `view: "summary"` pages complete guideline records with exact `drugCount` and `pairCount`. `view: "drugs"` or `"pairs"` requires `by: "id"`, retains the guideline descriptor, and pages the selected top-level collection; the other collection is omitted.
-- `limit` defaults to 25; positive safe integers above 100 clamp to 100 with a notice. Follow `page.nextOffset`. Pages use a 24,000-byte soft budget across both response surfaces and enrichment, cutting only between complete rows. One indivisible oversized row sets `oversizedRow: true` with a notice.
+- `limit` defaults to 25; positive safe integers above 100 clamp to 100 with a notice. Follow `page.nextOffset`. Drug coverage includes direct guideline IDs and links from CPIC gene–drug pairs.
 - No coverage returns `found: false`. An ambiguous drug name returns paged `candidates`; `page`, `shown` and `truncated` then describe those candidates. Retry with a `drugId` from that list.
 
 ---
@@ -86,14 +86,14 @@ Clinical pharmacogenomics evidence from the public [CPIC Database API](https://a
 - `mode: "drug"` takes exactly one of `drugName` (exact, case-insensitive) or `drugId`.
   - On its own, or with `geneSymbol` or `population`, it browses (`exploratory`).
   - To match, add `phenotype` or `activityScore`. These need `geneSymbol` when the drug's recommendations involve several genes.
-  - Alternatively, add a `geneResults` map: 1–10 genes, each `{ kind: "phenotype" | "activityScore" | "alleleStatus", value }`.
-- `mode: "genotype"` takes `genotype`: 1–10 gene → diplotype entries, each of which must resolve uniquely. An optional drug selector narrows the results.
+  - Alternatively, add a `geneResults` map: 1–25 genes, each `{ kind: "phenotype" | "activityScore" | "alleleStatus", value }`.
+- `mode: "genotype"` takes `genotype`: 1–25 gene → diplotype entries, each of which must resolve uniquely. An optional drug selector narrows the results.
 - `mode: "results"` discovers across drugs from `geneResults`, or `geneSymbol` with one `phenotype`/`activityScore`. An optional drug selector narrows the results. Unrelated panel genes do not exclude a recommendation; conflicting results for its prerequisites do.
 - Source gene `lookupmethod` determines accepted result kinds: `PHENOTYPE` permits `phenotype`; `ACTIVITY_SCORE` permits `phenotype` or `activityScore`; `ALLELE_STATUS` permits `alleleStatus`. Values are validated against source result/score fields. Phenotypes never become calculated scores. Inspect `pgx_list_reference` topics `genes` and `phenotypes` before matching.
 - All modes accept an exact `population`, `limit` (default 10) and `offset`. Positive safe-integer limits above 50 clamp to 50 with a notice. `incompleteLimit` (default 25) independently clamps above 100; `incompleteOffset` pages missing-gene diagnostics through `incompletePage.nextOffset`.
-- `status` is `exploratory`, `matched`, `no_match`, `incomplete` or `unresolved`. Drug and results matching require at least one overlapping supplied gene, reject conflicts on overlapping prerequisites, and ignore unrelated validated panel genes. A row matches only when every gene in its lookup key has an explicit result. `incompleteMatches` lists the rows that need more genes, with their `missingGenes` and without prescribing text.
+- `status` is `exploratory`, `matched`, `no_match`, `incomplete` or `unresolved`. Drug and results matching require at least one overlapping supplied gene, reject conflicts on overlapping prerequisites, and ignore unrelated validated panel genes. A row matches only when every gene in its lookup key has an explicit result. Inspect `incompleteDrugs` for the full per-drug summary across pages. Row diagnostics name the drug when available and list omitted genes and any untested named alleles in `missingAlleles`.
 - Empty-result notices distinguish unresolved drugs, absent recommendation tables, population mismatches and past-end pages. Where source coverage exists, a no-table notice links the guideline for consultation.
-- Alert view returns complete source records in `alerts`, including ordered `alerttext`, singular `phenotype`, lookup keys, allele statuses, scores, populations and versions. `No CDS`, `n/a`, sparse fields and explicit source `No Result` rows remain intact. Omitted genetics never become `No Result`. Missing prerequisites appear only as `{ testAlertId, drugId, missingGenes }` in `incompleteAlerts`, without alert text. `items` and `incompleteMatches` remain empty; `page` and `incompletePage` describe alerts and diagnostics. Default responses omit both alert fields.
+- Alert view returns complete source records in `alerts`, including ordered `alerttext`, singular `phenotype`, lookup keys, allele statuses, scores, populations and versions. `No CDS`, `n/a`, sparse fields and explicit source `No Result` rows remain intact. Omitted genetics never become `No Result`. Missing prerequisites appear in `incompleteAlerts`, with a source alert ID, drug details and missing prerequisites, without alert text. `items` and `incompleteMatches` remain empty; `page` and `incompletePage` describe alerts and diagnostics. Default responses omit both alert fields.
 
 ---
 
@@ -101,8 +101,8 @@ Clinical pharmacogenomics evidence from the public [CPIC Database API](https://a
 
 - Requires `geneSymbol`. `name` matches literally first, then retries a matching gene-prefixed star allele without that prefix. `clinicalFunctionalStatus` matches literal text case-insensitively. Returned source spelling stays unchanged; `effectiveQuery` shows the allele name used.
 - `limit` defaults to 25; positive safe integers above 100 clamp to 100 with a notice. Nonpositive, fractional and unsafe limits fail before fetching. `offset` is a nonnegative safe integer.
-- The 24,000-byte soft budget measures the entire serialized tool result, including both response surfaces and enrichment. It cuts only between complete alleles, keeping every frequency row. An indivisible oversized first row sets `oversizedRow: true` with a notice. Follow `page.nextOffset` to reconstruct the remaining rows.
-- Returns allele function and evidence with definition metadata and `populationFrequencies`. Frequencies stay as source fractions, missing values stay missing, and inferred frequencies are flagged as inferred.
+- Set `includePopulationFrequencies: true` to join complete population-frequency evidence for the requested page. Follow `page.nextOffset` for the next page.
+- Returns allele function and evidence with definition metadata and the source `frequency` map. Frequencies stay as source fractions, missing values stay missing, and inferred frequencies are flagged as inferred.
 
 ---
 
@@ -173,7 +173,7 @@ No API key is needed. For Docker or a source build, see [Running the server](#ru
 
 ## Configuration
 
-No server-specific environment variables are required.
+`PGX_LARGE_GENE_PANELS` defaults to `true`. Set it to `false` to restore a 10-entry cap on `genotype` and `geneResults`.
 
 | Variable | Description | Default |
 |:---|:---|:---|
@@ -192,7 +192,7 @@ See [`.env.example`](./.env.example) for the common framework overrides.
 
 ### Local development
 
-Requires [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+), and network access to `https://api.cpicpgx.org`.
+Requires [Bun v1.4.4](https://bun.sh/) or higher (or Node.js v24+), and network access to `https://api.cpicpgx.org`.
 
 - **Clone and install:**
 

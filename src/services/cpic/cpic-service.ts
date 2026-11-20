@@ -337,17 +337,6 @@ export class CpicWorkflow {
     };
   }
 
-  /** Read an exact source count, scanning only when count metadata is unavailable. */
-  async count<E extends CpicEndpoint>(
-    endpoint: E,
-    query: Omit<CpicQuery, 'limit' | 'offset'> = {},
-  ): Promise<number> {
-    const first = await this.page(endpoint, { ...query, limit: 1 });
-    if (first.page.total !== null) return first.page.total;
-    if (first.page.nextOffset === null) return first.items.length;
-    return (await this.scan(endpoint, query)).length;
-  }
-
   /** Exhaust a bounded related list; overflow fails instead of dropping source rows. */
   async scan<E extends CpicEndpoint>(
     endpoint: E,

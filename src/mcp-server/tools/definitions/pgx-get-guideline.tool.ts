@@ -6,6 +6,7 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import {
   clinicalCaveat,
   DrugSchema,
+  emptyPageNotice,
   GuidelineSchema,
   type GuidelineSelector,
   getCpicService,
@@ -13,15 +14,8 @@ import {
   PairSchema,
   provenanceSchema,
 } from '@/services/cpic/index.js';
-import { formatLossless } from '../shared/lossless-renderer.js';
+import { formatLossless, losslessEnrichmentTrailers } from '../shared/lossless-renderer.js';
 import {
-  budgetNotices,
-  budgetResponse,
-  budgetTrailers,
-  slicedPage,
-} from '../shared/response-budget.js';
-import {
-  budgetPaginationFields,
   cappedEnrichmentFields,
   drugIdSchema,
   optionalText,
@@ -61,14 +55,11 @@ const fields = {
 export const pgxGetGuideline = tool('pgx_get_guideline', {
   title: 'Get guideline coverage',
   description:
-    'Retrieve guideline coverage by source ID, exact gene symbol or exact drug name/ID. Default summary pages complete guideline records with exact drugCount/pairCount. view=drugs or pairs requires by=id and pages only that related collection, retaining its guideline descriptor. Ambiguous drug names page candidates for retry with drugId. Follow page.nextOffset; the 24,000-byte soft budget cuts only between complete rows, with oversizedRow for an indivisible exception. Missing coverage is found=false. Consult linked guidelines before clinical use.',
+    'Retrieve guideline coverage by source ID, exact gene symbol or exact drug name/ID. Default summary pages complete guideline records with exact drugCount/pairCount. view=drugs or pairs requires by=id and pages only that related collection, retaining its guideline descriptor. Ambiguous drug names page candidates for retry with drugId. Follow page.nextOffset for the selected collection. Missing coverage is found=false. Consult linked guidelines before clinical use.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
-  input: z.object({ ...fields, ...budgetPaginationFields }),
+  input: z.object({ ...fields, ...paginationFields }),
   output: z.object({
     view: z.enum(['summary', 'drugs', 'pairs']).describe('Selected guideline view.'),
-    oversizedRow: z
-      .boolean()
-      .describe('Whether one complete indivisible row exceeds the soft byte budget.'),
     page: pageSchema,
     found: z.boolean().describe('Whether guideline coverage was found.'),
     guidelines: z
@@ -107,7 +98,7 @@ export const pgxGetGuideline = tool('pgx_get_guideline', {
       .describe('Normalized guideline selectors and effective page bounds.'),
     ...cappedEnrichmentFields,
   },
-  enrichmentTrailer: budgetTrailers,
+  enrichmentTrailer: losslessEnrichmentTrailers,
   errors: [
     {
       reason: 'invalid_selector',
@@ -199,40 +190,19 @@ export const pgxGetGuideline = tool('pgx_get_guideline', {
         limit,
         offset: input.offset,
       });
-      const returned = result.page.returned;
-      const selected = budgetResponse(returned, (count, oversizedRow, trimmed) => {
-        const domain = {
-          found: result.found,
-          view: input.view,
-          oversizedRow,
-          guidelines:
-            input.view === 'summary' ? result.guidelines.slice(0, count) : result.guidelines,
-          ...(input.view === 'drugs' && { drugs: result.drugs?.slice(0, count) ?? [] }),
-          ...(input.view === 'pairs' && { pairs: result.pairs?.slice(0, count) ?? [] }),
-          candidates: result.candidates.slice(0, count),
-          guidance: result.guidance,
-          clinicalCaveat: clinicalCaveat as typeof clinicalCaveat,
-          page: slicedPage(result.page, count),
-          provenance: result.provenance,
-        };
-        domain.provenance = workflow.provenance(domain);
-        return {
-          domain,
-          enrichment: {
-            effectiveQuery,
-            notices: [
-              ...(result.found ? [] : [result.guidance]),
-              ...(input.limit > 100 ? ['Requested limit clamped to the 100-row cap.'] : []),
-              ...budgetNotices(oversizedRow, trimmed),
-            ],
-            truncated: domain.page.nextOffset !== null,
-            shown: count,
-            cap: limit,
-          },
-        };
+      const pastEnd = emptyPageNotice(result.page, '');
+      ctx.enrich({
+        effectiveQuery,
+        notices: [
+          ...(result.found ? [] : [result.guidance]),
+          ...(pastEnd ? [pastEnd] : []),
+          ...(input.limit > 100 ? ['Requested limit clamped to the 100-row cap.'] : []),
+        ],
+        truncated: result.page.nextOffset !== null,
+        shown: result.page.returned,
+        cap: limit,
       });
-      ctx.enrich(selected.enrichment);
-      return selected.domain;
+      return { ...result, view: input.view, clinicalCaveat } as const;
     });
   },
   format: formatLossless,

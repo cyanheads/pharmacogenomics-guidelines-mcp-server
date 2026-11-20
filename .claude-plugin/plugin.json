@@ -12,12 +12,21 @@
   "repository": "https://github.com/cyanheads/pharmacogenomics-guidelines-mcp-server",
   "license": "Apache-2.0",
   "keywords": ["mcp", "mcp-server", "model-context-protocol", "ai-agents", "ai-tools", "typescript", "bun", "stdio", "streamable-http", "cyanheads", "pharmacogenomics", "pharmacogenetics", "diplotypes", "prescribing-guidelines"],
+  "userConfig": {
+    "large_gene_panels": {
+      "type": "boolean",
+      "title": "Allow large gene panels",
+      "description": "Accept up to 25 genes per map. Disable to limit maps to 10 genes.",
+      "default": true
+    }
+  },
   "mcpServers": {
     "pharmacogenomics-guidelines-mcp-server": {
       "command": "npx",
       "args": ["-y", "@cyanheads/pharmacogenomics-guidelines-mcp-server"],
       "env": {
-        "MCP_TRANSPORT_TYPE": "stdio"
+        "MCP_TRANSPORT_TYPE": "stdio",
+        "PGX_LARGE_GENE_PANELS": "${user_config.large_gene_panels}"
       }
     }
   }

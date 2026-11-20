@@ -2,12 +2,11 @@
  * @fileoverview Bounded source diplotype resolution and allele evidence joins.
  * @module services/cpic/evidence
  */
-import type { CpicPageInfo, CpicWorkflow } from './cpic-service.js';
-import { buildCpicUrl, type CpicFilter } from './query.js';
-import type { Allele, Diplotype } from './records.js';
+import type { CpicWorkflow } from './cpic-service.js';
+import type { CpicFilter } from './query.js';
+import type { Diplotype } from './records.js';
 
 const frequencyScanCap = 2000;
-const frequencyPageSize = 100;
 
 /** Resolve only source-supported notation; keep every matching source row. */
 export async function resolveDiplotype(
@@ -37,19 +36,27 @@ export async function resolveDiplotype(
     return true;
   }
   if (!(await attempt(inputDiplotype))) {
-    const remainder = inputDiplotype.startsWith(geneSymbol)
-      ? inputDiplotype.slice(geneSymbol.length)
-      : '';
-    const suffix = remainder.trim();
-    const prefixed =
-      suffix.startsWith('*') || (/^\s/.test(remainder) && suffix.split('/').length === 2);
-    const notation = prefixed && !suffix.includes(geneSymbol) ? suffix : inputDiplotype;
-    if (!(notation !== inputDiplotype && (await attempt(notation)))) {
-      const parts = notation.split('/');
-      if (parts.length === 2 && parts.every((part) => part.trim().length > 0)) {
-        await attempt(`${parts[1]?.trim()}/${parts[0]?.trim()}`);
-      } else if (geneSymbol.startsWith('HLA-')) {
-        const status = notation.match(/^(\*\S+)\s+(positive|negative)$/i);
+    const parts = inputDiplotype.split('/');
+    const [first, second] = parts;
+    if (parts.length === 2 && first?.trim() && second?.trim()) {
+      const normalize = (part: string, allowPairPrefix: boolean) => {
+        const allele = part.trim();
+        if (!allele.toUpperCase().startsWith(geneSymbol)) return allele;
+        const suffix = allele.slice(geneSymbol.length);
+        // Retain the established whitespace-delimited prefix on a full non-star pair.
+        return suffix.trimStart().startsWith('*') || (allowPairPrefix && /^\s+\S/.test(suffix))
+          ? suffix.trimStart()
+          : allele;
+      };
+      const left = normalize(first, true);
+      const right = normalize(second, false);
+      if (!(await attempt(`${left}/${right}`))) await attempt(`${right}/${left}`);
+    } else if (parts.length === 1) {
+      const suffix = inputDiplotype.toUpperCase().startsWith(geneSymbol)
+        ? inputDiplotype.slice(geneSymbol.length).trimStart()
+        : inputDiplotype;
+      if (suffix.startsWith('*') && !(await attempt(suffix)) && geneSymbol.startsWith('HLA-')) {
+        const status = suffix.match(/^(\*\S+)\s+(positive|negative)$/i);
         if (status) await attempt(`${status[1]} ${status[2]?.toLowerCase()}`);
       }
     }
@@ -75,21 +82,14 @@ export async function resolveDiplotype(
 export interface AlleleSearch {
   clinicalFunctionalStatus?: string;
   geneSymbol: string;
+  includePopulationFrequencies: boolean;
   limit: number;
   name?: string;
   offset: number;
 }
 
-/** Join a source allele page to complete bounded population-frequency evidence. */
-export async function searchAlleles(
-  workflow: CpicWorkflow,
-  input: AlleleSearch,
-  select: (
-    rows: Allele[],
-    page: CpicPageInfo,
-    frequencyUrls: (count: number) => string[],
-  ) => number,
-) {
+/** Read a source allele page and optionally join complete bounded population-frequency evidence. */
+export async function searchAlleles(workflow: CpicWorkflow, input: AlleleSearch) {
   const filters: CpicFilter[] = [{ column: 'genesymbol', operator: 'eq', value: input.geneSymbol }];
   if (input.name !== undefined) filters.push({ column: 'name', operator: 'eq', value: input.name });
   if (input.clinicalFunctionalStatus !== undefined)
@@ -128,74 +128,27 @@ export async function searchAlleles(
       }
     }
   }
-  // The initial reserve covers the count probe and at least one evidence request.
-  let reservedPages = 2;
-  const frequencyQuery = (count: number): { filters: CpicFilter[] } => ({
-    filters: [
-      { column: 'genesymbol', operator: 'eq', value: input.geneSymbol },
-      {
-        column: 'name',
-        operator: 'in',
-        value: [...new Set(result.items.slice(0, count).map((row) => row.name))],
-      },
-    ],
-  });
-  const frequencyUrls = (count: number) => {
-    const names = [...new Set(result.items.slice(0, count).map((row) => row.name))];
-    if (!names.length) return [];
-    return Array.from({ length: reservedPages }, (_, index) =>
-      buildCpicUrl('population_frequency_view', {
-        ...frequencyQuery(count),
-        limit: frequencyPageSize + 1,
-        offset: index * frequencyPageSize,
-      }),
-    );
-  };
-  let count = select(result.items, result.page, frequencyUrls);
-  if (count > 1) {
-    const probe = await workflow.page('population_frequency_view', {
-      ...frequencyQuery(count),
-      limit: 1,
-    });
-    // An exact count bounds every narrower prefix; unknown totals retain the scan's full bound.
-    reservedPages =
-      probe.page.total === null
-        ? probe.items.length
-          ? frequencyScanCap / frequencyPageSize
-          : 0
-        : Math.min(
-            frequencyScanCap / frequencyPageSize,
-            Math.ceil(probe.page.total / frequencyPageSize),
-          );
-    count = select(result.items.slice(0, count), result.page, frequencyUrls);
+  if (!input.includePopulationFrequencies || result.items.length === 0) {
+    return {
+      effectiveName,
+      items: result.items,
+      page: result.page,
+      provenance: workflow.provenance(),
+    };
   }
-  const budgetTrimmed = count < result.items.length;
-  result = {
-    ...result,
-    items: result.items.slice(0, count),
-    page: {
-      ...result.page,
-      returned: count,
-      nextOffset: budgetTrimmed ? result.page.offset + count : result.page.nextOffset,
-    },
-  };
   const names = [...new Set(result.items.map((row) => row.name))];
-  const frequencies =
-    names.length === 0 || reservedPages === 0
-      ? []
-      : await workflow.scan(
-          'population_frequency_view',
-          {
-            filters: [
-              { column: 'genesymbol', operator: 'eq', value: input.geneSymbol },
-              { column: 'name', operator: 'in', value: names },
-            ],
-          },
-          frequencyScanCap,
-        );
+  const frequencies = await workflow.scan(
+    'population_frequency_view',
+    {
+      filters: [
+        { column: 'genesymbol', operator: 'eq', value: input.geneSymbol },
+        { column: 'name', operator: 'in', value: names },
+      ],
+    },
+    frequencyScanCap,
+  );
   return {
     effectiveName,
-    budgetTrimmed,
     items: result.items.map((row) =>
       workflow.join(row, {
         populationFrequencies: frequencies.filter(

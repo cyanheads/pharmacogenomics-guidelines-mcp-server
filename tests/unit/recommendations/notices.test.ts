@@ -30,6 +30,27 @@ it('names source guideline coverage only when the diagnostic relation exists', a
   expect(JSON.stringify(result.notices)).toContain('https://example.org/a_(b)?x=1&y=2');
 });
 
+it('names pair-linked source guidelines in the no-table notice', async () => {
+  const direct = recommendation().guideline!;
+  const linked = { ...direct, id: 8, name: 'Pair guideline', url: 'https://example.org/pair' };
+  upstream({
+    recommendations: [],
+    guidelines: [direct, linked],
+    pairs: [
+      { pairid: 1, drugid: 'D1', guidelineurl: linked.url },
+      { pairid: 2, drugid: 'D1', guidelineurl: linked.url },
+    ],
+  });
+  const result = await success({ mode: 'drug', drugId: 'D1' });
+  expect(result.notices).toEqual(
+    expect.arrayContaining([
+      expect.stringContaining('Source guideline'),
+      expect.stringContaining('Pair guideline'),
+      expect.stringContaining(linked.url),
+    ]),
+  );
+});
+
 it('names exact source populations and distinguishes past-end from missing rows', async () => {
   upstream({ recommendations: [recommendation(), { ...recommendation(2), population: null }] });
   const result = await success({ mode: 'drug', drugId: 'D1', population: 'wrong' });

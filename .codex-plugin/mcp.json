@@ -1,6 +1,7 @@
 {
   "pharmacogenomics-guidelines-mcp-server": {
     "command": "npx",
+    "env_vars": ["PGX_LARGE_GENE_PANELS"],
     "args": ["-y", "@cyanheads/pharmacogenomics-guidelines-mcp-server"],
     "env": {
       "MCP_TRANSPORT_TYPE": "stdio"

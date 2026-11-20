@@ -18,17 +18,6 @@ afterEach(() => {
 const service = new CpicService();
 
 describe('CPIC workflow paging', () => {
-  it('uses exact totals without scanning unselected records', async () => {
-    const fetch = vi.fn(async (_input: string) =>
-      Response.json([{ symbol: 'G' }], { headers: { 'content-range': '0-0/9000' } }),
-    );
-    vi.stubGlobal('fetch', fetch);
-    expect(await service.workflow(createMockContext(), (workflow) => workflow.count('gene'))).toBe(
-      9000,
-    );
-    expect(fetch).toHaveBeenCalledTimes(1);
-    expect(new URL(fetch.mock.calls[0]?.[0] ?? '').searchParams.get('limit')).toBe('2');
-  });
   it('attributes only returned nested records with escaped JSON pointers', async () => {
     vi.stubGlobal(
       'fetch',

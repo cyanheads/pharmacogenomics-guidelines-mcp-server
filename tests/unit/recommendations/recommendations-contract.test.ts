@@ -290,6 +290,8 @@ describe('genotype source matching', () => {
   });
   it.each([
     { gene: 'CYP2C19', input: '*2/*1', source: diplotype() },
+    { gene: 'CYP2C19', input: '*1 / *2', source: diplotype() },
+    { gene: 'CYP2C19', input: 'CYP2C19*1/CYP2C19*2', source: diplotype() },
     {
       gene: 'HLA-B',
       input: 'HLA-B*57:01 POSITIVE',
@@ -344,14 +346,15 @@ describe('genotype source matching', () => {
       expect(calls.every((url) => url.pathname.endsWith('/diplotype'))).toBe(true);
     },
   );
-  it('withholds RPC candidates requiring omitted genes and mismatched same-gene statuses', async () => {
+  it('withholds RPC candidates needing another gene or allele and rejects discordant statuses', async () => {
     const genotype = diplotype('HLA-B', '*57:01 positive', '*57:01 positive');
     upstream({
       diplotypes: [genotype],
-      rpc: [{ recommendationid: 1 }, { recommendationid: 2 }],
+      rpc: [{ recommendationid: 1 }, { recommendationid: 2 }, { recommendationid: 3 }],
       recommendations: [
         recommendation(1, { 'HLA-B': '*57:01 positive', 'HLA-A': '*31:01 negative' }),
         recommendation(2, { 'HLA-B': '*15:02 negative' }),
+        recommendation(3, { 'HLA-B': '*57:01 negative' }),
       ],
     });
     expect(
@@ -359,7 +362,10 @@ describe('genotype source matching', () => {
     ).toMatchObject({
       status: 'incomplete',
       items: [],
-      incompleteMatches: [{ recommendationId: 1, missingGenes: ['HLA-A'] }],
+      incompleteMatches: [
+        { recommendationId: 1, missingGenes: ['HLA-A'] },
+        { recommendationId: 2, missingAlleles: [{ geneSymbol: 'HLA-B', allele: '*15:02' }] },
+      ],
     });
   });
   it.each(['guideline', 'drug', 'lookupkey'] as const)(
